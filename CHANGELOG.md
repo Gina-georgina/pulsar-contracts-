@@ -28,6 +28,10 @@ Versions follow **MAJOR.MINOR.PATCH** semantics:
 
 ## [Unreleased]
 
+### Added
+- `docs/api-reference.md`: comprehensive API reference covering all function signatures, parameter types, return types, and event schemas for off-chain integrators (closes #77).
+- `docs/contract-abi.json`: machine-readable contract ABI with all functions, types, events, and error codes.
+
 ### Changed
 - Remove unused `StorageError` variant from the payment contract ABI.
 - Harden payment and refund flows against external token transfer re-entrancy by committing state before external calls.
