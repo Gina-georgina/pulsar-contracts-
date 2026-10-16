@@ -28,6 +28,10 @@ Versions follow **MAJOR.MINOR.PATCH** semantics:
 
 ## [Unreleased]
 
+### Added
+- `docs/adr/README.md`: ADR index with links to all existing decisions and instructions for creating new ADRs (closes #73).
+- `docs/adr/0000-template.md`: expanded ADR template with Rationale, Alternatives Considered, and References sections.
+
 ### Changed
 - Remove unused `StorageError` variant from the payment contract ABI.
 - Harden payment and refund flows against external token transfer re-entrancy by committing state before external calls.
