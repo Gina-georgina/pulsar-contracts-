@@ -11,6 +11,13 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  # DO-015: All cargo build/test/clippy/llvm-cov commands use --locked to
+  # ensure CI resolves exactly the dependency versions recorded in Cargo.lock,
+  # making builds reproducible across environments and preventing silent
+  # dependency drift. Cargo.lock is committed to the repository.
+  # Note: `cargo fmt` and `cargo audit` do not accept --locked; fmt operates
+  # on source files only and audit reads the lock file directly.
+  CARGO_INCREMENTAL: 0
 
 jobs:
   test:
