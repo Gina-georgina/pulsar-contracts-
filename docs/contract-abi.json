@@ -1,0 +1,488 @@
+{
+  "contract_name": "payment_processing_contract",
+  "version": "1.0.0",
+  "network": "soroban",
+  "functions": [
+    {
+      "name": "set_admin",
+      "doc": "One-time initialisation. Caller becomes admin and contract version is set to 1.",
+      "inputs": [
+        { "name": "admin", "type": "Address" }
+      ],
+      "outputs": []
+    },
+    {
+      "name": "get_version",
+      "doc": "Returns the current contract version.",
+      "inputs": [],
+      "outputs": [{ "type": "u32" }]
+    },
+    {
+      "name": "ping",
+      "doc": "Health-check endpoint. Returns the current ledger timestamp.",
+      "inputs": [],
+      "outputs": [{ "type": "u64" }]
+    },
+    {
+      "name": "upgrade",
+      "doc": "Upgrades the contract WASM in-place. Admin only.",
+      "inputs": [
+        { "name": "admin", "type": "Address" },
+        { "name": "new_wasm_hash", "type": "BytesN<32>" }
+      ],
+      "outputs": []
+    },
+    {
+      "name": "register_merchant",
+      "doc": "Registers a new merchant. Caller must be the merchant_address.",
+      "inputs": [
+        { "name": "merchant_address", "type": "Address" },
+        { "name": "name",             "type": "String" },
+        { "name": "description",      "type": "String" },
+        { "name": "contact_info",     "type": "String" },
+        { "name": "category",         "type": "MerchantCategory" }
+      ],
+      "outputs": []
+    },
+    {
+      "name": "deactivate_merchant",
+      "doc": "Deactivates a merchant. Callable by the merchant themselves or the admin.",
+      "inputs": [
+        { "name": "caller",           "type": "Address" },
+        { "name": "merchant_address", "type": "Address" }
+      ],
+      "outputs": []
+    },
+    {
+      "name": "get_merchant",
+      "doc": "Returns the Merchant struct for the given address.",
+      "inputs": [
+        { "name": "merchant_address", "type": "Address" }
+      ],
+      "outputs": [{ "type": "Merchant" }]
+    },
+    {
+      "name": "process_payment_with_signature",
+      "doc": "Transfers tokens from payer to merchant after verifying an ed25519 signature over the PaymentOrder.",
+      "inputs": [
+        { "name": "payer",                "type": "Address" },
+        { "name": "order",                "type": "PaymentOrder" },
+        { "name": "signature",            "type": "BytesN<64>" },
+        { "name": "merchant_public_key",  "type": "BytesN<32>" }
+      ],
+      "outputs": []
+    },
+    {
+      "name": "get_payment_by_id",
+      "doc": "Returns a PaymentRecord. Accessible by the payer, merchant, or admin.",
+      "inputs": [
+        { "name": "caller",   "type": "Address" },
+        { "name": "order_id", "type": "Bytes" }
+      ],
+      "outputs": [{ "type": "PaymentRecord" }]
+    },
+    {
+      "name": "get_merchant_payment_history",
+      "doc": "Returns a page of payments for a merchant with optional filtering and cursor-based pagination.",
+      "inputs": [
+        { "name": "merchant",    "type": "Address" },
+        { "name": "cursor",      "type": "Option<Bytes>" },
+        { "name": "limit",       "type": "u32" },
+        { "name": "filter",      "type": "Option<PaymentFilter>" },
+        { "name": "sort_field",  "type": "SortField" },
+        { "name": "sort_order",  "type": "SortOrder" }
+      ],
+      "outputs": [{ "type": "PaymentPage" }]
+    },
+    {
+      "name": "get_payer_payment_history",
+      "doc": "Returns a page of payments for a payer with optional filtering and cursor-based pagination.",
+      "inputs": [
+        { "name": "payer",       "type": "Address" },
+        { "name": "cursor",      "type": "Option<Bytes>" },
+        { "name": "limit",       "type": "u32" },
+        { "name": "filter",      "type": "Option<PaymentFilter>" },
+        { "name": "sort_field",  "type": "SortField" },
+        { "name": "sort_order",  "type": "SortOrder" }
+      ],
+      "outputs": [{ "type": "PaymentPage" }]
+    },
+    {
+      "name": "get_global_payment_stats",
+      "doc": "Admin-only aggregate payment statistics. date_start/date_end are currently a no-op (see SC-003).",
+      "inputs": [
+        { "name": "admin",      "type": "Address" },
+        { "name": "date_start", "type": "Option<u64>" },
+        { "name": "date_end",   "type": "Option<u64>" }
+      ],
+      "outputs": [{ "type": "GlobalStats" }]
+    },
+    {
+      "name": "get_merchant_stats",
+      "doc": "Per-merchant payment and refund statistics. Accessible by the merchant (own stats) or admin (any merchant).",
+      "inputs": [
+        { "name": "merchant",   "type": "Address" },
+        { "name": "date_start", "type": "Option<u64>" },
+        { "name": "date_end",   "type": "Option<u64>" }
+      ],
+      "outputs": [{ "type": "MerchantStats" }]
+    },
+    {
+      "name": "initiate_refund",
+      "doc": "Initiates a refund request. Callable by payer or merchant within 30 days of payment.",
+      "inputs": [
+        { "name": "caller",    "type": "Address" },
+        { "name": "refund_id", "type": "Bytes" },
+        { "name": "order_id",  "type": "Bytes" },
+        { "name": "amount",    "type": "i128" },
+        { "name": "reason",    "type": "String" }
+      ],
+      "outputs": []
+    },
+    {
+      "name": "approve_refund",
+      "doc": "Approves a pending refund. Callable by merchant or admin.",
+      "inputs": [
+        { "name": "caller",    "type": "Address" },
+        { "name": "refund_id", "type": "Bytes" }
+      ],
+      "outputs": []
+    },
+    {
+      "name": "reject_refund",
+      "doc": "Rejects a pending refund. Callable by merchant or admin.",
+      "inputs": [
+        { "name": "caller",    "type": "Address" },
+        { "name": "refund_id", "type": "Bytes" }
+      ],
+      "outputs": []
+    },
+    {
+      "name": "execute_refund",
+      "doc": "Transfers funds from merchant to payer. Requires merchant auth. Refund must be in Approved state.",
+      "inputs": [
+        { "name": "refund_id", "type": "Bytes" }
+      ],
+      "outputs": []
+    },
+    {
+      "name": "get_refund_status",
+      "doc": "Returns the current RefundStatus for a refund ID.",
+      "inputs": [
+        { "name": "refund_id", "type": "Bytes" }
+      ],
+      "outputs": [{ "type": "RefundStatus" }]
+    },
+    {
+      "name": "initiate_multisig_payment",
+      "doc": "Creates a multisig payment that requires all listed signers to sign before execution.",
+      "inputs": [
+        { "name": "initiator",         "type": "Address" },
+        { "name": "payment_id",        "type": "Bytes" },
+        { "name": "order",             "type": "PaymentOrder" },
+        { "name": "required_signers",  "type": "Vec<Address>" }
+      ],
+      "outputs": []
+    },
+    {
+      "name": "sign_multisig_payment",
+      "doc": "Records a signer's approval for a multisig payment.",
+      "inputs": [
+        { "name": "signer",     "type": "Address" },
+        { "name": "payment_id", "type": "Bytes" }
+      ],
+      "outputs": []
+    },
+    {
+      "name": "execute_multisig_payment",
+      "doc": "Executes a multisig payment once all required signers have signed.",
+      "inputs": [
+        { "name": "executor",   "type": "Address" },
+        { "name": "payment_id", "type": "Bytes" }
+      ],
+      "outputs": []
+    },
+    {
+      "name": "archive_payment_record",
+      "doc": "Admin only. Removes a payment record from hot storage.",
+      "inputs": [
+        { "name": "admin",    "type": "Address" },
+        { "name": "order_id", "type": "Bytes" }
+      ],
+      "outputs": []
+    },
+    {
+      "name": "cleanup_expired_payments",
+      "doc": "Admin only. Removes payments older than the configured cleanup period.",
+      "inputs": [
+        { "name": "admin", "type": "Address" }
+      ],
+      "outputs": []
+    },
+    {
+      "name": "set_payment_cleanup_period",
+      "doc": "Admin only. Sets the payment cleanup period in seconds. Default: 7,776,000 (90 days).",
+      "inputs": [
+        { "name": "admin",  "type": "Address" },
+        { "name": "period", "type": "u64" }
+      ],
+      "outputs": []
+    }
+  ],
+  "types": {
+    "MerchantCategory": {
+      "kind": "enum",
+      "variants": ["Retail", "Food", "Services", "Digital", "Other"]
+    },
+    "PaymentStatus": {
+      "kind": "enum",
+      "variants": ["Completed", "PartiallyRefunded", "FullyRefunded"]
+    },
+    "RefundStatus": {
+      "kind": "enum",
+      "variants": ["Pending", "Approved", "Rejected", "Completed", "Disputed"]
+    },
+    "SortField": {
+      "kind": "enum",
+      "variants": ["Date", "Amount"]
+    },
+    "SortOrder": {
+      "kind": "enum",
+      "variants": ["Ascending", "Descending"]
+    },
+    "StatusFilter": {
+      "kind": "enum",
+      "variants": ["Any", "Completed", "PartiallyRefunded", "FullyRefunded"]
+    },
+    "Merchant": {
+      "kind": "struct",
+      "fields": [
+        { "name": "address",           "type": "Address" },
+        { "name": "name",              "type": "String" },
+        { "name": "description",       "type": "String" },
+        { "name": "contact_info",      "type": "String" },
+        { "name": "category",          "type": "MerchantCategory" },
+        { "name": "active",            "type": "bool" },
+        { "name": "registered_at",     "type": "u64" },
+        { "name": "signing_public_key","type": "Option<BytesN<32>>" }
+      ]
+    },
+    "PaymentOrder": {
+      "kind": "struct",
+      "fields": [
+        { "name": "order_id",          "type": "Bytes",   "doc": "Unique order identifier — used as the idempotency key." },
+        { "name": "merchant_address",  "type": "Address" },
+        { "name": "payer",             "type": "Address" },
+        { "name": "token",             "type": "Address" },
+        { "name": "amount",            "type": "i128" },
+        { "name": "description",       "type": "String" },
+        { "name": "expires_at",        "type": "u64",    "doc": "Unix timestamp (seconds). 0 = never expires." }
+      ]
+    },
+    "PaymentRecord": {
+      "kind": "struct",
+      "fields": [
+        { "name": "order_id",              "type": "Bytes" },
+        { "name": "merchant_address",      "type": "Address" },
+        { "name": "payer",                 "type": "Address" },
+        { "name": "token",                 "type": "Address" },
+        { "name": "amount",                "type": "i128" },
+        { "name": "refunded_amount",       "type": "i128" },
+        { "name": "pending_refund_amount", "type": "i128" },
+        { "name": "status",                "type": "PaymentStatus" },
+        { "name": "paid_at",               "type": "u64" },
+        { "name": "description",           "type": "String" }
+      ]
+    },
+    "RefundRecord": {
+      "kind": "struct",
+      "fields": [
+        { "name": "refund_id",      "type": "Bytes" },
+        { "name": "order_id",       "type": "Bytes" },
+        { "name": "amount",         "type": "i128" },
+        { "name": "reason",         "type": "String" },
+        { "name": "status",         "type": "RefundStatus" },
+        { "name": "initiated_by",   "type": "Address" },
+        { "name": "initiated_at",   "type": "u64" },
+        { "name": "dispute_reason", "type": "String" }
+      ]
+    },
+    "MultisigPayment": {
+      "kind": "struct",
+      "fields": [
+        { "name": "payment_id",       "type": "Bytes" },
+        { "name": "order",            "type": "PaymentOrder" },
+        { "name": "required_signers", "type": "Vec<Address>" },
+        { "name": "signatures",       "type": "Vec<Address>" },
+        { "name": "executed",         "type": "bool" },
+        { "name": "expires_at",       "type": "u64" },
+        { "name": "created_at",       "type": "u64" }
+      ]
+    },
+    "PaymentFilter": {
+      "kind": "struct",
+      "fields": [
+        { "name": "date_start",  "type": "Option<u64>" },
+        { "name": "date_end",    "type": "Option<u64>" },
+        { "name": "amount_min",  "type": "Option<i128>" },
+        { "name": "amount_max",  "type": "Option<i128>" },
+        { "name": "tokens",      "type": "Option<Vec<Address>>", "doc": "None or empty list matches all tokens." },
+        { "name": "status",      "type": "StatusFilter" }
+      ]
+    },
+    "PaymentPage": {
+      "kind": "struct",
+      "fields": [
+        { "name": "records",     "type": "Vec<PaymentRecord>" },
+        { "name": "next_cursor", "type": "Option<Bytes>", "doc": "Opaque cursor. Encode as base64 for textual transport." },
+        { "name": "total",       "type": "u32" }
+      ]
+    },
+    "GlobalStats": {
+      "kind": "struct",
+      "fields": [
+        { "name": "total_payments",      "type": "u64" },
+        { "name": "total_volume",        "type": "i128" },
+        { "name": "total_refunds",       "type": "u64" },
+        { "name": "total_refund_volume", "type": "i128" }
+      ]
+    },
+    "MerchantStats": {
+      "kind": "struct",
+      "fields": [
+        { "name": "merchant_address",    "type": "Address" },
+        { "name": "total_payments",      "type": "u64" },
+        { "name": "total_volume",        "type": "i128" },
+        { "name": "total_refunds",       "type": "u64" },
+        { "name": "total_refund_volume", "type": "i128" }
+      ]
+    }
+  },
+  "events": [
+    {
+      "name": "admin_set",
+      "emitted_by": "set_admin",
+      "fields": [
+        { "name": "admin", "type": "Address" }
+      ]
+    },
+    {
+      "name": "merchant_registered",
+      "emitted_by": "register_merchant",
+      "fields": [
+        { "name": "merchant_address", "type": "Address" },
+        { "name": "name",             "type": "String" },
+        { "name": "category",         "type": "MerchantCategory" }
+      ]
+    },
+    {
+      "name": "merchant_deactivated",
+      "emitted_by": "deactivate_merchant",
+      "fields": [
+        { "name": "merchant_address", "type": "Address" },
+        { "name": "caller",           "type": "Address" }
+      ]
+    },
+    {
+      "name": "payment_processed",
+      "emitted_by": "process_payment_with_signature",
+      "fields": [
+        { "name": "order_id",         "type": "Bytes" },
+        { "name": "merchant_address", "type": "Address" },
+        { "name": "payer",            "type": "Address" },
+        { "name": "token",            "type": "Address" },
+        { "name": "amount",           "type": "i128" }
+      ]
+    },
+    {
+      "name": "refund_initiated",
+      "emitted_by": "initiate_refund",
+      "fields": [
+        { "name": "refund_id",    "type": "Bytes" },
+        { "name": "order_id",     "type": "Bytes" },
+        { "name": "amount",       "type": "i128" },
+        { "name": "initiated_by", "type": "Address" }
+      ]
+    },
+    {
+      "name": "refund_approved",
+      "emitted_by": "approve_refund",
+      "fields": [
+        { "name": "refund_id", "type": "Bytes" },
+        { "name": "caller",    "type": "Address" }
+      ]
+    },
+    {
+      "name": "refund_rejected",
+      "emitted_by": "reject_refund",
+      "fields": [
+        { "name": "refund_id", "type": "Bytes" },
+        { "name": "caller",    "type": "Address" }
+      ]
+    },
+    {
+      "name": "refund_executed",
+      "emitted_by": "execute_refund",
+      "fields": [
+        { "name": "refund_id", "type": "Bytes" },
+        { "name": "amount",    "type": "i128" }
+      ]
+    },
+    {
+      "name": "multisig_initiated",
+      "emitted_by": "initiate_multisig_payment",
+      "fields": [
+        { "name": "payment_id",       "type": "Bytes" },
+        { "name": "initiator",        "type": "Address" },
+        { "name": "required_signers", "type": "Vec<Address>" }
+      ]
+    },
+    {
+      "name": "multisig_signed",
+      "emitted_by": "sign_multisig_payment",
+      "fields": [
+        { "name": "payment_id", "type": "Bytes" },
+        { "name": "signer",     "type": "Address" }
+      ]
+    },
+    {
+      "name": "multisig_executed",
+      "emitted_by": "execute_multisig_payment",
+      "fields": [
+        { "name": "payment_id", "type": "Bytes" },
+        { "name": "executor",   "type": "Address" }
+      ]
+    },
+    {
+      "name": "contract_upgraded",
+      "emitted_by": "upgrade",
+      "fields": [
+        { "name": "new_wasm_hash", "type": "BytesN<32>" }
+      ]
+    }
+  ],
+  "errors": [
+    { "code": 1,  "name": "Unauthorized",               "description": "Caller lacks permission to perform this action" },
+    { "code": 2,  "name": "AdminAlreadySet",             "description": "Admin has already been initialised" },
+    { "code": 10, "name": "MerchantNotFound",            "description": "Merchant is not registered" },
+    { "code": 11, "name": "MerchantAlreadyRegistered",   "description": "A merchant with this address is already registered" },
+    { "code": 12, "name": "MerchantInactive",            "description": "Merchant account is deactivated" },
+    { "code": 20, "name": "PaymentNotFound",             "description": "Order ID not found" },
+    { "code": 21, "name": "PaymentAlreadyExists",        "description": "A payment with this order_id already exists — safe to treat as idempotent" },
+    { "code": 22, "name": "InvalidAmount",               "description": "Amount must be greater than zero" },
+    { "code": 23, "name": "InvalidSignature",            "description": "ed25519 signature verification failed" },
+    { "code": 24, "name": "PaymentExpired",              "description": "Order is past its expires_at timestamp" },
+    { "code": 25, "name": "InsufficientBalance",         "description": "Merchant balance too low for refund" },
+    { "code": 30, "name": "RefundNotFound",              "description": "Refund ID not found" },
+    { "code": 31, "name": "RefundAlreadyExists",         "description": "A refund with this ID already exists — safe to treat as idempotent" },
+    { "code": 32, "name": "RefundWindowExpired",         "description": "Past the 30-day refund window" },
+    { "code": 33, "name": "RefundAmountExceedsPayment",  "description": "Cumulative refund amount exceeds the original payment" },
+    { "code": 34, "name": "RefundNotApproved",           "description": "Refund is not in Approved state" },
+    { "code": 35, "name": "RefundAlreadyCompleted",      "description": "Refund has already been completed or rejected" },
+    { "code": 40, "name": "MultisigNotFound",            "description": "Multisig payment not found" },
+    { "code": 41, "name": "MultisigAlreadySigned",       "description": "This signer has already signed — safe to treat as idempotent" },
+    { "code": 42, "name": "MultisigAlreadyExecuted",     "description": "Multisig payment has already been executed — safe to treat as idempotent" },
+    { "code": 43, "name": "InsufficientSignatures",      "description": "Not all required signers have signed" },
+    { "code": 50, "name": "InvalidInput",                "description": "General input validation failure" }
+  ]
+}
