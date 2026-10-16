@@ -179,6 +179,17 @@ fn test_initiate_multisig_duplicate_signer_fails() {
     );
 }
 
+// SC-007: Pagination cursor logic is inverted — records are skipped incorrectly across pages.
+//
+// Bug: `skip` was set to `true` when a cursor was present and records were
+// skipped until the cursor ID was found. The cursor record itself was excluded
+// and the page started from the record *after* it — but `next_cursor` was set
+// to the *last* record on the current page. On the next call the first record
+// of the new page was therefore skipped, causing data loss.
+//
+// Fix: collect all matching records first, sort them, then find the cursor
+// position by `order_id` and slice from `position + 1` onward. The
+// `next_cursor` is set to the last record in the current page slice.
 #[test]
 fn test_pagination_cursor_inverted() {
     let (env, client) = setup();
@@ -195,14 +206,37 @@ fn test_pagination_cursor_inverted() {
         order.amount = i * 100;
         client.process_payment_with_signature(&payer, &order, &zero_sig(&env), &zero_key(&env));
     }
+
+    // Page 1: top 2 by amount descending → 500, 400
     let page1 = client.get_merchant_payment_history(&merchant, &None, &2, &None, &SortField::Amount, &SortOrder::Descending);
     assert_eq!(page1.records.len(), 2);
     assert_eq!(page1.records.get(0).unwrap().amount, 500);
     assert_eq!(page1.records.get(1).unwrap().amount, 400);
+    assert!(page1.next_cursor.is_some(), "page 1 must have a next_cursor");
+
+    // Page 2: next 2 → 300, 200 (must not re-include 400 or skip 300)
     let page2 = client.get_merchant_payment_history(&merchant, &page1.next_cursor, &2, &None, &SortField::Amount, &SortOrder::Descending);
     assert_eq!(page2.records.len(), 2);
     assert_eq!(page2.records.get(0).unwrap().amount, 300);
     assert_eq!(page2.records.get(1).unwrap().amount, 200);
+    assert!(page2.next_cursor.is_some(), "page 2 must have a next_cursor");
+
+    // Page 3: last record → 100 only; no further cursor
+    let page3 = client.get_merchant_payment_history(&merchant, &page2.next_cursor, &2, &None, &SortField::Amount, &SortOrder::Descending);
+    assert_eq!(page3.records.len(), 1);
+    assert_eq!(page3.records.get(0).unwrap().amount, 100);
+    assert!(page3.next_cursor.is_none(), "page 3 is the last page");
+
+    // Verify all 5 distinct records were returned with no duplicates or gaps.
+    let mut all_amounts = alloc::vec![
+        page1.records.get(0).unwrap().amount,
+        page1.records.get(1).unwrap().amount,
+        page2.records.get(0).unwrap().amount,
+        page2.records.get(1).unwrap().amount,
+        page3.records.get(0).unwrap().amount,
+    ];
+    all_amounts.sort_unstable();
+    assert_eq!(all_amounts, alloc::vec![100, 200, 300, 400, 500]);
 }
 
 // SC-006: No expiry enforcement on multisig payments.
