@@ -1973,11 +1973,11 @@ fn test_payment_zero_amount_fails() {
         &MerchantCategory::Retail,
         &None,
     );
-    mint(&env, &token, &admin, &payer, 5000);
+    mint(&env, &token, &payer, 5000);
 
     let mut order = make_order(&env, &merchant, &payer, &token);
     order.amount = 0;
-    let (pub_key, sig) = sign_order(&env, &order);
+    let (_pub_key, sig) = sign_order(&env, &order);
 
     let result = client.try_process_payment_with_signature(
         &payer,
@@ -2006,11 +2006,11 @@ fn test_payment_negative_amount_fails() {
         &MerchantCategory::Retail,
         &None,
     );
-    mint(&env, &token, &admin, &payer, 5000);
+    mint(&env, &token, &payer, 5000);
 
     let mut order = make_order(&env, &merchant, &payer, &token);
     order.amount = -1;
-    let (pub_key, sig) = sign_order(&env, &order);
+    let (_pub_key, sig) = sign_order(&env, &order);
 
     let result = client.try_process_payment_with_signature(
         &payer,
