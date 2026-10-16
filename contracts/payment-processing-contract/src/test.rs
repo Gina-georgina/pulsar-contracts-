@@ -977,6 +977,39 @@ fn test_cleanup_expired_payments() {
     assert_eq!(client.try_get_payment_by_id(&payer, &bytes(&env, "ORDER_002")), Err(Ok(PaymentError::PaymentNotFound)));
 }
 
+/// T-012: Some expired, some not — only expired payments are removed.
+#[test]
+fn test_cleanup_some_expired_leaves_recent() {
+    let (env, client) = setup();
+    let (admin, merchant, payer, token) = setup_paid_order(&env, &client);
+    // Set cleanup period to 3600 seconds
+    client.set_payment_cleanup_period(&admins(&env, &admin), &3600);
+    // Advance time so ORDER_001 (created at t=0) is now past the cleanup period
+    env.ledger().with_mut(|l| l.timestamp = 7201);
+    // Add a second payment at t=7201 — not yet past the cleanup period
+    let order_recent = PaymentOrder {
+        order_id: bytes(&env, "ORDER_RECENT"),
+        merchant_address: merchant.clone(),
+        payer: payer.clone(),
+        token: token.clone(),
+        amount: 200,
+        description: str(&env, "recent"),
+        expires_at: 0,
+    };
+    client.process_payment_with_signature(&payer, &order_recent, &zero_sig(&env), &zero_key(&env));
+    // Only ORDER_001 was created before the cutoff; ORDER_RECENT was just created
+    let count = client.cleanup_expired_payments(&admins(&env, &admin));
+    assert_eq!(count, 1);
+    // ORDER_001 should be gone
+    assert_eq!(
+        client.try_get_payment_by_id(&payer, &bytes(&env, "ORDER_001")),
+        Err(Ok(PaymentError::PaymentNotFound))
+    );
+    // ORDER_RECENT should still exist
+    let recent = client.get_payment_by_id(&payer, &bytes(&env, "ORDER_RECENT"));
+    assert_eq!(recent.amount, 200);
+}
+
 #[test]
 fn test_cleanup_no_expired_returns_zero() {
     let (env, client) = setup();
