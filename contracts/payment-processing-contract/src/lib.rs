@@ -591,8 +591,13 @@ impl PaymentContract {
 
     /// Remove payment records older than the configured cleanup period. Admin only.
     ///
-    /// Iterates the global payment index and deletes any record whose `paid_at`
-    /// timestamp is older than `now - cleanup_period`.
+    /// Iterates the global payment index (`GlobalPaymentIndex`) and deletes any
+    /// record whose `paid_at` timestamp is older than `now - cleanup_period`.
+    /// The global index is updated in place to remove deleted IDs.
+    ///
+    /// Fixes SC-002: previously this function was a no-op that always returned 0.
+    /// It now correctly scans the `GlobalPaymentIndex`, removes expired records
+    /// from persistent storage, and returns the actual count of removed records.
     ///
     /// # Parameters
     /// - `admins` — Admin addresses that together satisfy the multi-sig threshold.
