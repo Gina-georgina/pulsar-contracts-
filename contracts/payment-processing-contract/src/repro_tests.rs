@@ -224,3 +224,117 @@ fn test_archive_payment_with_refund_decrements_both_stats() {
     assert_eq!(stats_after.total_refunds, 0);
     assert_eq!(stats_after.total_refund_volume, 0);
 }
+
+// SC-008: Insertion-sort on soroban_sdk::Vec is O(n²) and hits instruction limits.
+//
+// Bug: paginate_payments performed an in-place insertion sort on a
+// soroban_sdk::Vec<PaymentRecord>. soroban_sdk::Vec lives in the Soroban host
+// and every element access (get/set) costs host-side instructions. For n
+// records this O(n²) sort caused ~n²/2 host round-trips, making large merchant
+// histories fail with an instruction-budget panic.
+//
+// Fix: collect all matching records into a native alloc::vec::Vec<PaymentRecord>
+// first (one host read per record), then sort with Rust's standard sort_by
+// (O(n log n) Timsort). This eliminates repeated host round-trips during the
+// sort and stays within instruction limits up to the MAX_PAYMENT_IDS_PER_KEY
+// cap (10 000 entries).
+//
+// This test creates 20 payments and verifies that paginated results are
+// returned in the correct sorted order across multiple pages, confirming
+// the O(n log n) implementation is functionally correct.
+#[test]
+fn test_pagination_sort_correctness_with_many_records() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let merchant = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let token = create_token(&env, &admin);
+    client.set_admin(&admins(&env, &admin), &1);
+    client.register_merchant(
+        &merchant,
+        &str(&env, "M"),
+        &str(&env, "D"),
+        &str(&env, "E"),
+        &MerchantCategory::Retail,
+        &None,
+    );
+    // Mint enough for 20 payments of varying amounts.
+    mint(&env, &token, &payer, 1_000_000);
+
+    // Create 20 payments with amounts 100, 200, ..., 2000 in insertion order.
+    for i in 1..=20_i128 {
+        let mut order = make_order(&env, &merchant, &payer, &token);
+        order.order_id = bytes(&env, &format!("ORD_{:03}", i));
+        order.amount = i * 100;
+        client.process_payment_with_signature(&payer, &order, &zero_sig(&env), &zero_key(&env));
+    }
+
+    // Page 1: top 5 by amount descending → 2000..1600
+    let page1 = client.get_merchant_payment_history(
+        &merchant,
+        &None,
+        &5,
+        &None,
+        &SortField::Amount,
+        &SortOrder::Descending,
+    );
+    assert_eq!(page1.records.len(), 5);
+    assert_eq!(page1.records.get(0).unwrap().amount, 2000);
+    assert_eq!(page1.records.get(4).unwrap().amount, 1600);
+
+    // Page 2 → 1500..1100
+    let page2 = client.get_merchant_payment_history(
+        &merchant,
+        &page1.next_cursor,
+        &5,
+        &None,
+        &SortField::Amount,
+        &SortOrder::Descending,
+    );
+    assert_eq!(page2.records.len(), 5);
+    assert_eq!(page2.records.get(0).unwrap().amount, 1500);
+    assert_eq!(page2.records.get(4).unwrap().amount, 1100);
+
+    // Page 3 → 1000..600
+    let page3 = client.get_merchant_payment_history(
+        &merchant,
+        &page2.next_cursor,
+        &5,
+        &None,
+        &SortField::Amount,
+        &SortOrder::Descending,
+    );
+    assert_eq!(page3.records.len(), 5);
+    assert_eq!(page3.records.get(0).unwrap().amount, 1000);
+    assert_eq!(page3.records.get(4).unwrap().amount, 600);
+
+    // Page 4 → 500..100 (last page, no cursor)
+    let page4 = client.get_merchant_payment_history(
+        &merchant,
+        &page3.next_cursor,
+        &5,
+        &None,
+        &SortField::Amount,
+        &SortOrder::Descending,
+    );
+    assert_eq!(page4.records.len(), 5);
+    assert_eq!(page4.records.get(0).unwrap().amount, 500);
+    assert_eq!(page4.records.get(4).unwrap().amount, 100);
+    assert!(page4.next_cursor.is_none(), "page 4 is the last page");
+
+    // Collect all amounts and verify no gaps or duplicates.
+    let mut all_amounts: alloc::vec::Vec<i128> = (1..=4)
+        .flat_map(|pg| {
+            let page = match pg {
+                1 => &page1,
+                2 => &page2,
+                3 => &page3,
+                _ => &page4,
+            };
+            (0..page.records.len()).map(|i| page.records.get(i as u32).unwrap().amount).collect::<alloc::vec::Vec<_>>()
+        })
+        .collect();
+    all_amounts.sort_unstable();
+    let expected: alloc::vec::Vec<i128> = (1..=20).map(|i| i * 100).collect();
+    assert_eq!(all_amounts, expected, "all 20 records must be returned once, in full");
+}
