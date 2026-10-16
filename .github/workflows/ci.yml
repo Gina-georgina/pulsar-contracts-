@@ -55,7 +55,7 @@ jobs:
         run: bash scripts/check-license-headers.sh
 
       - name: Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --all-targets --all-features --locked -- -D warnings
 
       - name: Run tests
         run: cargo test --all-features --locked
@@ -204,9 +204,17 @@ jobs:
           COVERAGE=$(cargo llvm-cov --all-features --locked --summary-only 2>&1 \
             | grep -E '^TOTAL' | awk '{print $10}' | tr -d '%')
           echo "Line coverage: ${COVERAGE}%"
+          # Write coverage summary to GitHub Step Summary
+          echo "## Coverage Report" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Metric | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|--------|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Line Coverage | ${COVERAGE}% |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Threshold | 80% (warning only) |" >> "$GITHUB_STEP_SUMMARY"
           if [ -n "$COVERAGE" ] && [ "$(echo "$COVERAGE < 80" | bc -l)" = "1" ]; then
+            echo "| Status | ⚠️ Below threshold |" >> "$GITHUB_STEP_SUMMARY"
             echo "::warning::Line coverage ${COVERAGE}% is below the 80% threshold. Please add tests."
           else
+            echo "| Status | ✅ Threshold met |" >> "$GITHUB_STEP_SUMMARY"
             echo "Coverage threshold met: ${COVERAGE}%"
           fi
         working-directory: contracts/payment-processing-contract

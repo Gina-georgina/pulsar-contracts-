@@ -1238,6 +1238,14 @@ impl PaymentContract {
             }
         }
         // Sort all matching records.
+        //
+        // SC-008: We use Rust's standard slice::sort_by (O(n log n) Timsort) on
+        // a native Vec<PaymentRecord> collected above. The original implementation
+        // performed an in-place insertion sort directly on a soroban_sdk::Vec,
+        // which is O(n²) and would exceed Soroban's instruction budget for
+        // merchants with hundreds of payments. By collecting into a RustVec first
+        // and using sort_by we stay well within instruction limits for the
+        // MAX_PAYMENT_IDS_PER_KEY cap (10 000 entries).
         records.sort_by(|a, b| {
             let (v1, v2) = match sort_field {
                 SortField::Date => (a.paid_at as i128, b.paid_at as i128),
