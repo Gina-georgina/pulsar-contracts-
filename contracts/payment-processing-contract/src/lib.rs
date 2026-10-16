@@ -408,13 +408,21 @@ impl PaymentContract {
     /// Return aggregate payment and refund statistics. Admin only.
     ///
     /// When `date_start` and `date_end` are both `None` the pre-computed
-    /// counters are returned directly. When either date bound is provided the
-    /// function scans all payment and refund records and filters by timestamp.
+    /// counters are returned directly (O(1)). When either date bound is
+    /// provided the function performs a scan-based fallback that filters
+    /// the global payment and refund indexes by timestamp (O(n)).
+    ///
+    /// Fixes SC-003: previously `date_start` and `date_end` were silently
+    /// discarded (`let _ = (date_start, date_end)`) so callers always
+    /// received all-time totals regardless of the requested window.
     ///
     /// # Parameters
     /// - `admins` — Admin addresses that together satisfy the multi-sig threshold.
     /// - `date_start` — Optional Unix timestamp lower bound (inclusive).
+    ///   `None` means no lower bound.
     /// - `date_end` — Optional Unix timestamp upper bound (inclusive).
+    ///   `None` means no upper bound.
+    /// - Both `None` → returns cached all-time totals.
     ///
     /// # Returns
     /// A [`GlobalStats`] struct with total payment/refund counts and volumes.
