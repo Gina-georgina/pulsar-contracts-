@@ -28,6 +28,11 @@ Versions follow **MAJOR.MINOR.PATCH** semantics:
 
 ## [Unreleased]
 
+### Added
+- `docs/IDEMPOTENCY_GUIDE.md`: documents contract idempotency behaviour for `PaymentAlreadyExists` and how off-chain clients should handle duplicate submissions gracefully (closes #84).
+- `sdk/src/idempotency.ts`: `processPaymentIdempotent` helper that treats `PaymentAlreadyExists` as a successful idempotent response.
+- `sdk/src/__tests__/idempotency.test.ts`: test suite covering retry scenarios for idempotent payment submission.
+
 ### Changed
 - Remove unused `StorageError` variant from the payment contract ABI.
 - Harden payment and refund flows against external token transfer re-entrancy by committing state before external calls.

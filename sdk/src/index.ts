@@ -77,3 +77,14 @@ export function getPublicKey(privateKey: Uint8Array): string {
   const { publicKey } = nacl.sign.keyPair.fromSeed(seed);
   return Buffer.from(publicKey).toString('hex');
 }
+
+// ── Idempotency helpers ───────────────────────────────────────────────────────
+
+export {
+  processPaymentIdempotent,
+  isPulsarError,
+} from './idempotency';
+export type {
+  IdempotentPaymentResult,
+  PaymentSubmitFn,
+} from './idempotency';
