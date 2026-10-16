@@ -867,8 +867,16 @@ impl PaymentContract {
     /// `Approved` status. The token transfer is performed after all state
     /// updates to reduce re-entrancy risk.
     ///
+    /// Fixes SC-004: previously the function signature took no `caller`
+    /// parameter, meaning any account could invoke the function before the
+    /// `require_auth` on `merchant_address` was reached. The fix adds an
+    /// explicit `caller: Address` parameter, calls `caller.require_auth()`
+    /// immediately, and then verifies `caller == record.merchant_address`
+    /// before any state is mutated or funds transferred.
+    ///
     /// # Parameters
-    /// - `caller` — The merchant address; must be authenticated.
+    /// - `caller` — The merchant address; must be authenticated. Rejected with
+    ///   `Unauthorized` if it does not match the payment's merchant.
     /// - `refund_id` — The unique identifier of the refund to execute.
     ///
     /// # Errors

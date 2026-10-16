@@ -509,9 +509,6 @@ stellar contract invoke --id $CONTRACT_ID --source-account <MERCHANT_KEY> --netw
 
 **See also**: [ANALYTICS_GUIDE.md](docs/ANALYTICS_GUIDE.md) for detailed usage and best practices.
 
----
-> **Known Limitation:** The `date_start` and `date_end` parameters for `get_global_payment_stats` are currently a no‑op due to SC‑003. They will be functional once the issue is resolved.
-
 ### Refunds
 
 Refund window: **30 days + 1-hour grace buffer** from `paid_at`. Partial refunds are allowed; cumulative refunds cannot exceed the original amount.
