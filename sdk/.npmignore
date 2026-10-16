@@ -1,0 +1,5 @@
+src/
+scripts/
+tsconfig.json
+*.test.ts
+__tests__/

@@ -349,16 +349,7 @@ fn test_payment_payer_mismatch_fails() {
 #[test]
 fn test_successful_payment_with_signature() {
     let (env, client) = setup();
-    let admin = Address::generate(&env);
-    let merchant = Address::generate(&env);
-    let payer = Address::generate(&env);
-    let token = create_token(&env, &admin);
-    client.set_admin(&admins(&env, &admin), &1);
-    client.register_merchant(&merchant, &str(&env, "Store"), &str(&env, "desc"), &str(&env, "c@c.com"), &MerchantCategory::Retail, &None);
-    mint(&env, &token, &payer, 5000);
-    let order = make_order(&env, &merchant, &payer, &token);
-    let (_pk, sig) = sign_order(&env, &order);
-    client.process_payment_with_signature(&payer, &order, &sig, &zero_key(&env));
+    let (_admin, _merchant, payer, _token) = setup_paid_order(&env, &client);
     let record = client.get_payment_by_id(&payer, &bytes(&env, "ORDER_001"));
     assert_eq!(record.amount, 1000);
     assert_eq!(record.status, PaymentStatus::Completed);
@@ -367,16 +358,9 @@ fn test_successful_payment_with_signature() {
 #[test]
 fn test_duplicate_payment_fails() {
     let (env, client) = setup();
-    let admin = Address::generate(&env);
-    let merchant = Address::generate(&env);
-    let payer = Address::generate(&env);
-    let token = create_token(&env, &admin);
-    client.set_admin(&admins(&env, &admin), &1);
-    client.register_merchant(&merchant, &str(&env, "Store"), &str(&env, "desc"), &str(&env, "c@c.com"), &MerchantCategory::Retail, &None);
-    mint(&env, &token, &payer, 5000);
+    let (_admin, merchant, payer, token) = setup_paid_order(&env, &client);
     let order = make_order(&env, &merchant, &payer, &token);
     let (_pk, sig) = sign_order(&env, &order);
-    client.process_payment_with_signature(&payer, &order, &sig, &zero_key(&env));
     assert_eq!(
         client.try_process_payment_with_signature(&payer, &order, &sig, &zero_key(&env)),
         Err(Ok(PaymentError::PaymentAlreadyExists))
@@ -975,6 +959,39 @@ fn test_cleanup_expired_payments() {
     assert_eq!(count, 2);
     assert_eq!(client.try_get_payment_by_id(&payer, &bytes(&env, "ORDER_001")), Err(Ok(PaymentError::PaymentNotFound)));
     assert_eq!(client.try_get_payment_by_id(&payer, &bytes(&env, "ORDER_002")), Err(Ok(PaymentError::PaymentNotFound)));
+}
+
+/// T-012: Some expired, some not — only expired payments are removed.
+#[test]
+fn test_cleanup_some_expired_leaves_recent() {
+    let (env, client) = setup();
+    let (admin, merchant, payer, token) = setup_paid_order(&env, &client);
+    // Set cleanup period to 3600 seconds
+    client.set_payment_cleanup_period(&admins(&env, &admin), &3600);
+    // Advance time so ORDER_001 (created at t=0) is now past the cleanup period
+    env.ledger().with_mut(|l| l.timestamp = 7201);
+    // Add a second payment at t=7201 — not yet past the cleanup period
+    let order_recent = PaymentOrder {
+        order_id: bytes(&env, "ORDER_RECENT"),
+        merchant_address: merchant.clone(),
+        payer: payer.clone(),
+        token: token.clone(),
+        amount: 200,
+        description: str(&env, "recent"),
+        expires_at: 0,
+    };
+    client.process_payment_with_signature(&payer, &order_recent, &zero_sig(&env), &zero_key(&env));
+    // Only ORDER_001 was created before the cutoff; ORDER_RECENT was just created
+    let count = client.cleanup_expired_payments(&admins(&env, &admin));
+    assert_eq!(count, 1);
+    // ORDER_001 should be gone
+    assert_eq!(
+        client.try_get_payment_by_id(&payer, &bytes(&env, "ORDER_001")),
+        Err(Ok(PaymentError::PaymentNotFound))
+    );
+    // ORDER_RECENT should still exist
+    let recent = client.get_payment_by_id(&payer, &bytes(&env, "ORDER_RECENT"));
+    assert_eq!(recent.amount, 200);
 }
 
 #[test]
@@ -1973,11 +1990,11 @@ fn test_payment_zero_amount_fails() {
         &MerchantCategory::Retail,
         &None,
     );
-    mint(&env, &token, &admin, &payer, 5000);
+    mint(&env, &token, &payer, 5000);
 
     let mut order = make_order(&env, &merchant, &payer, &token);
     order.amount = 0;
-    let (pub_key, sig) = sign_order(&env, &order);
+    let (_pub_key, sig) = sign_order(&env, &order);
 
     let result = client.try_process_payment_with_signature(
         &payer,
@@ -2006,11 +2023,11 @@ fn test_payment_negative_amount_fails() {
         &MerchantCategory::Retail,
         &None,
     );
-    mint(&env, &token, &admin, &payer, 5000);
+    mint(&env, &token, &payer, 5000);
 
     let mut order = make_order(&env, &merchant, &payer, &token);
     order.amount = -1;
-    let (pub_key, sig) = sign_order(&env, &order);
+    let (_pub_key, sig) = sign_order(&env, &order);
 
     let result = client.try_process_payment_with_signature(
         &payer,
