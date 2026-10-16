@@ -2072,7 +2072,7 @@ fn test_real_ed25519_valid_signature_succeeds() {
         &MerchantCategory::Retail,
         &Some(merchant_pub_key.clone()),
     );
-    mint(&env, &token, &admin, &payer, 5000);
+    mint(&env, &token, &payer, 5000);
 
     let order = make_order(&env, &merchant, &payer, &token);
 
@@ -2116,7 +2116,7 @@ fn test_real_ed25519_tampered_signature_fails() {
         &MerchantCategory::Retail,
         &Some(merchant_pub_key.clone()),
     );
-    mint(&env, &token, &admin, &payer, 5000);
+    mint(&env, &token, &payer, 5000);
 
     let order = make_order(&env, &merchant, &payer, &token);
 
@@ -2132,5 +2132,70 @@ fn test_real_ed25519_tampered_signature_fails() {
     assert!(
         result.is_err(),
         "Expected error for tampered signature, got Ok"
+    );
+}
+
+/// SC-001 acceptance test: proves that a signature over a different amount is rejected.
+/// This verifies the fix that uses the full PaymentOrder XDR as the signature payload,
+/// not just the order_id field.
+#[test]
+fn test_signature_over_different_amount_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PaymentContract);
+    let client = PaymentContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let merchant = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let token = create_token(&env, &admin);
+
+    let seed = [42u8; 32];
+    let signing_key = SigningKey::from_bytes(&seed);
+    let pub_key_bytes = signing_key.verifying_key().to_bytes();
+    let merchant_pub_key: BytesN<32> = BytesN::from_array(&env, &pub_key_bytes);
+
+    client.set_admin(&vec![&env, admin.clone()], &1);
+    client.register_merchant(
+        &merchant,
+        &str(&env, "SignatureTestStore"),
+        &str(&env, "desc"),
+        &str(&env, "test@store.com"),
+        &MerchantCategory::Retail,
+        &Some(merchant_pub_key.clone()),
+    );
+    mint(&env, &token, &payer, 10_000);
+
+    // Create an order with amount=1000
+    let order_1000 = PaymentOrder {
+        order_id: bytes(&env, "ORDER_AMOUNT_TEST"),
+        merchant_address: merchant.clone(),
+        payer: payer.clone(),
+        token: token.clone(),
+        amount: 1000,
+        description: str(&env, "Original amount"),
+        expires_at: 0,
+    };
+
+    // Sign the order with amount=1000
+    let (_, sig_1000) = sign_order_xdr(&env, &order_1000, &seed);
+
+    // Attempt to reuse the same signature on an order with amount=2000
+    let order_2000 = PaymentOrder {
+        order_id: bytes(&env, "ORDER_AMOUNT_TEST"), // same order_id
+        merchant_address: merchant.clone(),
+        payer: payer.clone(),
+        token: token.clone(),
+        amount: 2000, // different amount
+        description: str(&env, "Original amount"),
+        expires_at: 0,
+    };
+
+    // The contract must reject the signature because the XDR payload differs
+    let result =
+        client.try_process_payment_with_signature(&payer, &order_2000, &sig_1000, &merchant_pub_key);
+    assert!(
+        result.is_err(),
+        "Expected signature verification to fail when amount differs, but got Ok"
     );
 }
