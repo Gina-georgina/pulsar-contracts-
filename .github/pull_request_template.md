@@ -12,8 +12,9 @@
 
 ## Checklist
 
-- [ ] I have updated **CHANGELOG.md** under `[Unreleased]` with a summary of
-      this change (Added / Changed / Deprecated / Removed / Fixed / Security).
+- [ ] I have updated **CHANGELOG.md** under `## [Unreleased]` with a one-line
+      summary of this change using the appropriate heading
+      (`Added` / `Changed` / `Deprecated` / `Removed` / `Fixed` / `Security`).
 - [ ] New or modified behaviour is covered by tests.
 - [ ] Clippy and `cargo fmt` pass locally.
 - [ ] No new `unwrap()` / `expect()` calls in contract code without justification.
