@@ -133,6 +133,108 @@ fn test_pagination_cursor_inverted() {
     assert_eq!(page2.records.get(1).unwrap().amount, 200);
 }
 
+// SC-006: No expiry enforcement on multisig payments.
+//
+// Bug: MultisigPayment had a `created_at` field but no `expires_at`. A multisig
+// payment could sit unsigned indefinitely, locking funds or allowing execution
+// long after the business intent had lapsed.
+//
+// Fix: `MultisigPayment` gains an `expires_at: u64` field set at initiation to
+// `now + default_multisig_expiry` (default 24 h). `sign_multisig_payment` and
+// `execute_multisig_payment` both return `PaymentExpired` when the current
+// ledger timestamp exceeds `expires_at`.
+#[test]
+fn test_multisig_expiry_blocks_sign() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let merchant = Address::generate(&env);
+    let signer1 = Address::generate(&env);
+    let token = create_token(&env, &admin);
+    client.set_admin(&admins(&env, &admin), &1);
+    client.register_merchant(&merchant, &str(&env, "Store"), &str(&env, "desc"), &str(&env, "c@c.com"), &MerchantCategory::Retail, &None);
+    mint(&env, &token, &signer1, 5000);
+    let order = PaymentOrder {
+        order_id: bytes(&env, "MS_EXP_SIGN"),
+        merchant_address: merchant.clone(),
+        payer: signer1.clone(),
+        token: token.clone(),
+        amount: 1000,
+        description: str(&env, "Multisig expiry sign test"),
+        expires_at: 0,
+    };
+    let mut signers = Vec::new(&env);
+    signers.push_back(signer1.clone());
+    client.initiate_multisig_payment(&signer1, &bytes(&env, "MS_EXP_SIGN"), &order, &signers);
+    // Advance time past the default 24-hour expiry window (86 400 s).
+    env.ledger().with_mut(|l| l.timestamp = 86_400 + 3_601);
+    assert_eq!(
+        client.try_sign_multisig_payment(&signer1, &bytes(&env, "MS_EXP_SIGN")),
+        Err(Ok(PaymentError::PaymentExpired)),
+        "sign_multisig_payment must reject an expired payment"
+    );
+}
+
+#[test]
+fn test_multisig_expiry_blocks_execute() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let merchant = Address::generate(&env);
+    let signer1 = Address::generate(&env);
+    let token = create_token(&env, &admin);
+    client.set_admin(&admins(&env, &admin), &1);
+    client.register_merchant(&merchant, &str(&env, "Store"), &str(&env, "desc"), &str(&env, "c@c.com"), &MerchantCategory::Retail, &None);
+    mint(&env, &token, &signer1, 5000);
+    let order = PaymentOrder {
+        order_id: bytes(&env, "MS_EXP_EXEC"),
+        merchant_address: merchant.clone(),
+        payer: signer1.clone(),
+        token: token.clone(),
+        amount: 1000,
+        description: str(&env, "Multisig expiry execute test"),
+        expires_at: 0,
+    };
+    let mut signers = Vec::new(&env);
+    signers.push_back(signer1.clone());
+    client.initiate_multisig_payment(&signer1, &bytes(&env, "MS_EXP_EXEC"), &order, &signers);
+    // Sign while still valid.
+    client.sign_multisig_payment(&signer1, &bytes(&env, "MS_EXP_EXEC"));
+    // Now advance past expiry before executing.
+    env.ledger().with_mut(|l| l.timestamp = 86_400 + 3_601);
+    assert_eq!(
+        client.try_execute_multisig_payment(&signer1, &bytes(&env, "MS_EXP_EXEC")),
+        Err(Ok(PaymentError::PaymentExpired)),
+        "execute_multisig_payment must reject an expired payment"
+    );
+}
+
+#[test]
+fn test_multisig_within_expiry_succeeds() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let merchant = Address::generate(&env);
+    let signer1 = Address::generate(&env);
+    let token = create_token(&env, &admin);
+    client.set_admin(&admins(&env, &admin), &1);
+    client.register_merchant(&merchant, &str(&env, "Store"), &str(&env, "desc"), &str(&env, "c@c.com"), &MerchantCategory::Retail, &None);
+    mint(&env, &token, &signer1, 5000);
+    let order = PaymentOrder {
+        order_id: bytes(&env, "MS_EXP_OK"),
+        merchant_address: merchant.clone(),
+        payer: signer1.clone(),
+        token: token.clone(),
+        amount: 1000,
+        description: str(&env, "Multisig within expiry"),
+        expires_at: 0,
+    };
+    let mut signers = Vec::new(&env);
+    signers.push_back(signer1.clone());
+    client.initiate_multisig_payment(&signer1, &bytes(&env, "MS_EXP_OK"), &order, &signers);
+    // Stay well within the 24 h window.
+    env.ledger().with_mut(|l| l.timestamp = 3_600);
+    client.sign_multisig_payment(&signer1, &bytes(&env, "MS_EXP_OK"));
+    client.execute_multisig_payment(&signer1, &bytes(&env, "MS_EXP_OK"));
+}
+
 #[test]
 fn test_initiate_multisig_max_signers_exceeded() {
     let (env, client) = setup();
