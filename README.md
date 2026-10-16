@@ -9,6 +9,17 @@ Pulsar is a comprehensive payment-processing smart contract for the Stellar Soro
 
 ---
 
+## SDK & Integrator Resources
+
+| Resource | Description |
+|---|---|
+| [`@pulsar-contracts/sdk`](sdk/README.md) | TypeScript SDK — `createOrder`, `signOrder`, idempotency helpers |
+| [API Reference](docs/api-reference.md) | All function signatures, parameter types, return types, and event schemas |
+| [Contract ABI (JSON)](docs/contract-abi.json) | Machine-readable ABI for tooling and code generation |
+| [Idempotency Guide](docs/IDEMPOTENCY_GUIDE.md) | Handling network retries and `PaymentAlreadyExists` safely |
+
+---
+
 ## Table of Contents
 
 - [Overview](#overview)

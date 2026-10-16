@@ -28,6 +28,13 @@ Versions follow **MAJOR.MINOR.PATCH** semantics:
 
 ## [Unreleased]
 
+### Added
+- `sdk/`: TypeScript SDK (`@pulsar-contracts/sdk`) with `createOrder`, `signOrder`, `getPublicKey`, `serializeOrder`, and `processPaymentIdempotent` helpers for off-chain order construction and signing (closes #83).
+- `sdk/package.json`: updated with npm publish config, `exports` field, `prepublishOnly` build step, Jest test runner, and pinned dependencies.
+- `sdk/.npmignore`: excludes source and test files from the published package.
+- `sdk/README.md`: comprehensive README with installation, quick start, full API docs, and links to the idempotency guide and contract API reference.
+- `README.md`: added SDK & Integrator Resources table linking to the SDK, API reference, ABI, and idempotency guide.
+
 ### Changed
 - Remove unused `StorageError` variant from the payment contract ABI.
 - Harden payment and refund flows against external token transfer re-entrancy by committing state before external calls.
