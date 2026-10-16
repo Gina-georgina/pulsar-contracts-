@@ -1,15 +1,24 @@
-# SPDX-License-Identifier: MIT
-#
 # Testnet environment configuration for Pulsar contract seeding.
+# This file is safe to commit — it contains no secrets.
 
 [network]
 name = "testnet"
+# Soroban RPC endpoint for Stellar Testnet
+rpc_url = "https://soroban-testnet.stellar.org"
+network_passphrase = "Test SDF Network ; September 2015"
+horizon_url = "https://horizon-testnet.stellar.org"
 
 [contract]
-# Set via environment variable or prompt
+# Contract ID on testnet — set via environment variable CONTRACT_ID or update after deployment.
+contract_id = ""
 
 [admin]
+# Stellar CLI key name for the testnet admin account.
 account = "admin"
+# Public key of the testnet admin account (not a secret — safe to commit).
+# The corresponding secret key must be set in the environment variable:
+#   ADMIN_SECRET_KEY=S...
+admin_public_key = ""
 
 [token]
 account = "token_issuer"
@@ -39,3 +48,11 @@ initial_balance = 10000000
 [logging]
 level = "info"
 verbose = false
+
+# ── Secret values (NEVER commit these) ────────────────────────────────────────
+# The following values must be supplied via environment variables at runtime:
+#
+#   ADMIN_SECRET_KEY   — Stellar secret key (S...) for the testnet admin account
+#
+# Example (.env file, gitignored):
+#   ADMIN_SECRET_KEY=S...
