@@ -87,6 +87,78 @@ fn test_approve_refund_unauthorized_fails() {
     );
 }
 
+// SC-005: Multisig executor pays from their own balance instead of a shared escrow.
+//
+// Bug: execute_multisig_payment called token_client.transfer(&executor, ...)
+// meaning the executor — not the initiator or a locked escrow — funded the
+// payment. This broke the multi-party intent and allowed any signer to be
+// drained.
+//
+// Fix:
+// - initiate_multisig_payment locks funds from the *initiator* into the
+//   contract address (escrow) immediately via transfer(&initiator, &contract, amount).
+// - execute_multisig_payment releases from escrow via transfer(&contract, &merchant, amount).
+// - The executor's balance is never touched.
+#[test]
+fn test_multisig_escrow_deducted_at_initiation() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let merchant = Address::generate(&env);
+    let initiator = Address::generate(&env);
+    let signer1 = Address::generate(&env);
+    let token = create_token(&env, &admin);
+    client.set_admin(&admins(&env, &admin), &1);
+    client.register_merchant(&merchant, &str(&env, "Store"), &str(&env, "desc"), &str(&env, "c@c.com"), &MerchantCategory::Retail, &None);
+
+    // Mint funds to initiator; executor (signer1) receives no funds.
+    mint(&env, &token, &initiator, 5000);
+
+    let order = PaymentOrder {
+        order_id: bytes(&env, "MS_ESCROW_001"),
+        merchant_address: merchant.clone(),
+        payer: initiator.clone(),
+        token: token.clone(),
+        amount: 1000,
+        description: str(&env, "Multisig escrow test"),
+        expires_at: 0,
+    };
+    let mut signers = Vec::new(&env);
+    signers.push_back(signer1.clone());
+
+    let token_client = soroban_sdk::token::TokenClient::new(&env, &token);
+    let initiator_balance_before = token_client.balance(&initiator);
+    assert_eq!(initiator_balance_before, 5000);
+
+    // Initiator's funds are locked into escrow at initiation.
+    client.initiate_multisig_payment(&initiator, &bytes(&env, "MS_ESCROW_001"), &order, &signers);
+
+    let initiator_balance_after_init = token_client.balance(&initiator);
+    assert_eq!(
+        initiator_balance_after_init,
+        4000,
+        "initiator must be debited 1000 at initiation (funds locked in escrow)"
+    );
+
+    // Signer1 (the executor) has zero funds — should not matter.
+    let signer1_balance_before_exec = token_client.balance(&signer1);
+    assert_eq!(signer1_balance_before_exec, 0, "signer1 has no funds");
+
+    client.sign_multisig_payment(&signer1, &bytes(&env, "MS_ESCROW_001"));
+    client.execute_multisig_payment(&signer1, &bytes(&env, "MS_ESCROW_001"));
+
+    // Executor's (signer1) balance must remain zero — executor is not debited.
+    let signer1_balance_after_exec = token_client.balance(&signer1);
+    assert_eq!(
+        signer1_balance_after_exec,
+        0,
+        "executor must not be debited at execution"
+    );
+
+    // Merchant receives the funds.
+    let merchant_balance = token_client.balance(&merchant);
+    assert_eq!(merchant_balance, 1000, "merchant must receive the escrowed funds");
+}
+
 #[test]
 fn test_initiate_multisig_duplicate_signer_fails() {
     let (env, client) = setup();
