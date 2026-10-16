@@ -9,6 +9,17 @@ Pulsar is a comprehensive payment-processing smart contract for the Stellar Soro
 
 ---
 
+## SDK & Integrator Resources
+
+| Resource | Description |
+|---|---|
+| [`@pulsar-contracts/sdk`](sdk/README.md) | TypeScript SDK — `createOrder`, `signOrder`, idempotency helpers |
+| [API Reference](docs/api-reference.md) | All function signatures, parameter types, return types, and event schemas |
+| [Contract ABI (JSON)](docs/contract-abi.json) | Machine-readable ABI for tooling and code generation |
+| [Idempotency Guide](docs/IDEMPOTENCY_GUIDE.md) | Handling network retries and `PaymentAlreadyExists` safely |
+
+---
+
 ## Table of Contents
 
 - [Overview](#overview)
@@ -210,9 +221,15 @@ Save the returned contract ID as `CONTRACT_ID`.
 
 ### Prerequisites — Keys
 
-Before deploying you need a Stellar keypair and a funded account.
+Before deploying you need a Stellar keypair, a funded account, and the compiled WASM binary.
 
-**Generate a keypair:**
+**1. Build the WASM binary** (if you haven't already):
+
+```bash
+cargo build --target wasm32-unknown-unknown --release
+```
+
+**2. Generate a keypair:**
 
 ```bash
 stellar keys generate --global deployer
@@ -220,7 +237,7 @@ stellar keys address deployer        # prints your public key (G...)
 stellar keys show deployer           # prints your secret key (S...) — keep this private
 ```
 
-**Fund your testnet account via Friendbot:**
+**3. Fund your testnet account via Friendbot:**
 
 Testnet accounts start with zero balance. Friendbot is a faucet that credits 10 000 XLM to any new address:
 
@@ -228,9 +245,17 @@ Testnet accounts start with zero balance. Friendbot is a faucet that credits 10 
 curl "https://friendbot.stellar.org?addr=$(stellar keys address deployer)"
 ```
 
-Or open the URL in a browser. Once funded, use the secret key wherever `<TESTNET_SECRET_KEY>` or `<ADMIN_SECRET_KEY>` appears below.
+Or open the URL in a browser. Once funded, use the secret key wherever `<TESTNET_SECRET_KEY>` or `<ADMIN_SECRET_KEY>` appears in the commands below.
 
-`$CONTRACT_ID` is the contract address printed by `stellar contract deploy` — save it immediately after running the deploy command.
+**4. Save the contract ID after deployment:**
+
+`stellar contract deploy` prints a contract address (starting with `C`). Export it immediately so the subsequent commands work:
+
+```bash
+export CONTRACT_ID="<address printed by stellar contract deploy>"
+```
+
+Use `$CONTRACT_ID` wherever it appears in the commands below.
 
 ---
 

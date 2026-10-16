@@ -87,6 +87,78 @@ fn test_approve_refund_unauthorized_fails() {
     );
 }
 
+// SC-005: Multisig executor pays from their own balance instead of a shared escrow.
+//
+// Bug: execute_multisig_payment called token_client.transfer(&executor, ...)
+// meaning the executor — not the initiator or a locked escrow — funded the
+// payment. This broke the multi-party intent and allowed any signer to be
+// drained.
+//
+// Fix:
+// - initiate_multisig_payment locks funds from the *initiator* into the
+//   contract address (escrow) immediately via transfer(&initiator, &contract, amount).
+// - execute_multisig_payment releases from escrow via transfer(&contract, &merchant, amount).
+// - The executor's balance is never touched.
+#[test]
+fn test_multisig_escrow_deducted_at_initiation() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let merchant = Address::generate(&env);
+    let initiator = Address::generate(&env);
+    let signer1 = Address::generate(&env);
+    let token = create_token(&env, &admin);
+    client.set_admin(&admins(&env, &admin), &1);
+    client.register_merchant(&merchant, &str(&env, "Store"), &str(&env, "desc"), &str(&env, "c@c.com"), &MerchantCategory::Retail, &None);
+
+    // Mint funds to initiator; executor (signer1) receives no funds.
+    mint(&env, &token, &initiator, 5000);
+
+    let order = PaymentOrder {
+        order_id: bytes(&env, "MS_ESCROW_001"),
+        merchant_address: merchant.clone(),
+        payer: initiator.clone(),
+        token: token.clone(),
+        amount: 1000,
+        description: str(&env, "Multisig escrow test"),
+        expires_at: 0,
+    };
+    let mut signers = Vec::new(&env);
+    signers.push_back(signer1.clone());
+
+    let token_client = soroban_sdk::token::TokenClient::new(&env, &token);
+    let initiator_balance_before = token_client.balance(&initiator);
+    assert_eq!(initiator_balance_before, 5000);
+
+    // Initiator's funds are locked into escrow at initiation.
+    client.initiate_multisig_payment(&initiator, &bytes(&env, "MS_ESCROW_001"), &order, &signers);
+
+    let initiator_balance_after_init = token_client.balance(&initiator);
+    assert_eq!(
+        initiator_balance_after_init,
+        4000,
+        "initiator must be debited 1000 at initiation (funds locked in escrow)"
+    );
+
+    // Signer1 (the executor) has zero funds — should not matter.
+    let signer1_balance_before_exec = token_client.balance(&signer1);
+    assert_eq!(signer1_balance_before_exec, 0, "signer1 has no funds");
+
+    client.sign_multisig_payment(&signer1, &bytes(&env, "MS_ESCROW_001"));
+    client.execute_multisig_payment(&signer1, &bytes(&env, "MS_ESCROW_001"));
+
+    // Executor's (signer1) balance must remain zero — executor is not debited.
+    let signer1_balance_after_exec = token_client.balance(&signer1);
+    assert_eq!(
+        signer1_balance_after_exec,
+        0,
+        "executor must not be debited at execution"
+    );
+
+    // Merchant receives the funds.
+    let merchant_balance = token_client.balance(&merchant);
+    assert_eq!(merchant_balance, 1000, "merchant must receive the escrowed funds");
+}
+
 #[test]
 fn test_initiate_multisig_duplicate_signer_fails() {
     let (env, client) = setup();
@@ -107,6 +179,17 @@ fn test_initiate_multisig_duplicate_signer_fails() {
     );
 }
 
+// SC-007: Pagination cursor logic is inverted — records are skipped incorrectly across pages.
+//
+// Bug: `skip` was set to `true` when a cursor was present and records were
+// skipped until the cursor ID was found. The cursor record itself was excluded
+// and the page started from the record *after* it — but `next_cursor` was set
+// to the *last* record on the current page. On the next call the first record
+// of the new page was therefore skipped, causing data loss.
+//
+// Fix: collect all matching records first, sort them, then find the cursor
+// position by `order_id` and slice from `position + 1` onward. The
+// `next_cursor` is set to the last record in the current page slice.
 #[test]
 fn test_pagination_cursor_inverted() {
     let (env, client) = setup();
@@ -123,14 +206,139 @@ fn test_pagination_cursor_inverted() {
         order.amount = i * 100;
         client.process_payment_with_signature(&payer, &order, &zero_sig(&env), &zero_key(&env));
     }
+
+    // Page 1: top 2 by amount descending → 500, 400
     let page1 = client.get_merchant_payment_history(&merchant, &None, &2, &None, &SortField::Amount, &SortOrder::Descending);
     assert_eq!(page1.records.len(), 2);
     assert_eq!(page1.records.get(0).unwrap().amount, 500);
     assert_eq!(page1.records.get(1).unwrap().amount, 400);
+    assert!(page1.next_cursor.is_some(), "page 1 must have a next_cursor");
+
+    // Page 2: next 2 → 300, 200 (must not re-include 400 or skip 300)
     let page2 = client.get_merchant_payment_history(&merchant, &page1.next_cursor, &2, &None, &SortField::Amount, &SortOrder::Descending);
     assert_eq!(page2.records.len(), 2);
     assert_eq!(page2.records.get(0).unwrap().amount, 300);
     assert_eq!(page2.records.get(1).unwrap().amount, 200);
+    assert!(page2.next_cursor.is_some(), "page 2 must have a next_cursor");
+
+    // Page 3: last record → 100 only; no further cursor
+    let page3 = client.get_merchant_payment_history(&merchant, &page2.next_cursor, &2, &None, &SortField::Amount, &SortOrder::Descending);
+    assert_eq!(page3.records.len(), 1);
+    assert_eq!(page3.records.get(0).unwrap().amount, 100);
+    assert!(page3.next_cursor.is_none(), "page 3 is the last page");
+
+    // Verify all 5 distinct records were returned with no duplicates or gaps.
+    let mut all_amounts = alloc::vec![
+        page1.records.get(0).unwrap().amount,
+        page1.records.get(1).unwrap().amount,
+        page2.records.get(0).unwrap().amount,
+        page2.records.get(1).unwrap().amount,
+        page3.records.get(0).unwrap().amount,
+    ];
+    all_amounts.sort_unstable();
+    assert_eq!(all_amounts, alloc::vec![100, 200, 300, 400, 500]);
+}
+
+// SC-006: No expiry enforcement on multisig payments.
+//
+// Bug: MultisigPayment had a `created_at` field but no `expires_at`. A multisig
+// payment could sit unsigned indefinitely, locking funds or allowing execution
+// long after the business intent had lapsed.
+//
+// Fix: `MultisigPayment` gains an `expires_at: u64` field set at initiation to
+// `now + default_multisig_expiry` (default 24 h). `sign_multisig_payment` and
+// `execute_multisig_payment` both return `PaymentExpired` when the current
+// ledger timestamp exceeds `expires_at`.
+#[test]
+fn test_multisig_expiry_blocks_sign() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let merchant = Address::generate(&env);
+    let signer1 = Address::generate(&env);
+    let token = create_token(&env, &admin);
+    client.set_admin(&admins(&env, &admin), &1);
+    client.register_merchant(&merchant, &str(&env, "Store"), &str(&env, "desc"), &str(&env, "c@c.com"), &MerchantCategory::Retail, &None);
+    mint(&env, &token, &signer1, 5000);
+    let order = PaymentOrder {
+        order_id: bytes(&env, "MS_EXP_SIGN"),
+        merchant_address: merchant.clone(),
+        payer: signer1.clone(),
+        token: token.clone(),
+        amount: 1000,
+        description: str(&env, "Multisig expiry sign test"),
+        expires_at: 0,
+    };
+    let mut signers = Vec::new(&env);
+    signers.push_back(signer1.clone());
+    client.initiate_multisig_payment(&signer1, &bytes(&env, "MS_EXP_SIGN"), &order, &signers);
+    // Advance time past the default 24-hour expiry window (86 400 s).
+    env.ledger().with_mut(|l| l.timestamp = 86_400 + 3_601);
+    assert_eq!(
+        client.try_sign_multisig_payment(&signer1, &bytes(&env, "MS_EXP_SIGN")),
+        Err(Ok(PaymentError::PaymentExpired)),
+        "sign_multisig_payment must reject an expired payment"
+    );
+}
+
+#[test]
+fn test_multisig_expiry_blocks_execute() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let merchant = Address::generate(&env);
+    let signer1 = Address::generate(&env);
+    let token = create_token(&env, &admin);
+    client.set_admin(&admins(&env, &admin), &1);
+    client.register_merchant(&merchant, &str(&env, "Store"), &str(&env, "desc"), &str(&env, "c@c.com"), &MerchantCategory::Retail, &None);
+    mint(&env, &token, &signer1, 5000);
+    let order = PaymentOrder {
+        order_id: bytes(&env, "MS_EXP_EXEC"),
+        merchant_address: merchant.clone(),
+        payer: signer1.clone(),
+        token: token.clone(),
+        amount: 1000,
+        description: str(&env, "Multisig expiry execute test"),
+        expires_at: 0,
+    };
+    let mut signers = Vec::new(&env);
+    signers.push_back(signer1.clone());
+    client.initiate_multisig_payment(&signer1, &bytes(&env, "MS_EXP_EXEC"), &order, &signers);
+    // Sign while still valid.
+    client.sign_multisig_payment(&signer1, &bytes(&env, "MS_EXP_EXEC"));
+    // Now advance past expiry before executing.
+    env.ledger().with_mut(|l| l.timestamp = 86_400 + 3_601);
+    assert_eq!(
+        client.try_execute_multisig_payment(&signer1, &bytes(&env, "MS_EXP_EXEC")),
+        Err(Ok(PaymentError::PaymentExpired)),
+        "execute_multisig_payment must reject an expired payment"
+    );
+}
+
+#[test]
+fn test_multisig_within_expiry_succeeds() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let merchant = Address::generate(&env);
+    let signer1 = Address::generate(&env);
+    let token = create_token(&env, &admin);
+    client.set_admin(&admins(&env, &admin), &1);
+    client.register_merchant(&merchant, &str(&env, "Store"), &str(&env, "desc"), &str(&env, "c@c.com"), &MerchantCategory::Retail, &None);
+    mint(&env, &token, &signer1, 5000);
+    let order = PaymentOrder {
+        order_id: bytes(&env, "MS_EXP_OK"),
+        merchant_address: merchant.clone(),
+        payer: signer1.clone(),
+        token: token.clone(),
+        amount: 1000,
+        description: str(&env, "Multisig within expiry"),
+        expires_at: 0,
+    };
+    let mut signers = Vec::new(&env);
+    signers.push_back(signer1.clone());
+    client.initiate_multisig_payment(&signer1, &bytes(&env, "MS_EXP_OK"), &order, &signers);
+    // Stay well within the 24 h window.
+    env.ledger().with_mut(|l| l.timestamp = 3_600);
+    client.sign_multisig_payment(&signer1, &bytes(&env, "MS_EXP_OK"));
+    client.execute_multisig_payment(&signer1, &bytes(&env, "MS_EXP_OK"));
 }
 
 #[test]
@@ -223,4 +431,118 @@ fn test_archive_payment_with_refund_decrements_both_stats() {
     assert_eq!(stats_after.total_volume, 0);
     assert_eq!(stats_after.total_refunds, 0);
     assert_eq!(stats_after.total_refund_volume, 0);
+}
+
+// SC-008: Insertion-sort on soroban_sdk::Vec is O(n²) and hits instruction limits.
+//
+// Bug: paginate_payments performed an in-place insertion sort on a
+// soroban_sdk::Vec<PaymentRecord>. soroban_sdk::Vec lives in the Soroban host
+// and every element access (get/set) costs host-side instructions. For n
+// records this O(n²) sort caused ~n²/2 host round-trips, making large merchant
+// histories fail with an instruction-budget panic.
+//
+// Fix: collect all matching records into a native alloc::vec::Vec<PaymentRecord>
+// first (one host read per record), then sort with Rust's standard sort_by
+// (O(n log n) Timsort). This eliminates repeated host round-trips during the
+// sort and stays within instruction limits up to the MAX_PAYMENT_IDS_PER_KEY
+// cap (10 000 entries).
+//
+// This test creates 20 payments and verifies that paginated results are
+// returned in the correct sorted order across multiple pages, confirming
+// the O(n log n) implementation is functionally correct.
+#[test]
+fn test_pagination_sort_correctness_with_many_records() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let merchant = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let token = create_token(&env, &admin);
+    client.set_admin(&admins(&env, &admin), &1);
+    client.register_merchant(
+        &merchant,
+        &str(&env, "M"),
+        &str(&env, "D"),
+        &str(&env, "E"),
+        &MerchantCategory::Retail,
+        &None,
+    );
+    // Mint enough for 20 payments of varying amounts.
+    mint(&env, &token, &payer, 1_000_000);
+
+    // Create 20 payments with amounts 100, 200, ..., 2000 in insertion order.
+    for i in 1..=20_i128 {
+        let mut order = make_order(&env, &merchant, &payer, &token);
+        order.order_id = bytes(&env, &format!("ORD_{:03}", i));
+        order.amount = i * 100;
+        client.process_payment_with_signature(&payer, &order, &zero_sig(&env), &zero_key(&env));
+    }
+
+    // Page 1: top 5 by amount descending → 2000..1600
+    let page1 = client.get_merchant_payment_history(
+        &merchant,
+        &None,
+        &5,
+        &None,
+        &SortField::Amount,
+        &SortOrder::Descending,
+    );
+    assert_eq!(page1.records.len(), 5);
+    assert_eq!(page1.records.get(0).unwrap().amount, 2000);
+    assert_eq!(page1.records.get(4).unwrap().amount, 1600);
+
+    // Page 2 → 1500..1100
+    let page2 = client.get_merchant_payment_history(
+        &merchant,
+        &page1.next_cursor,
+        &5,
+        &None,
+        &SortField::Amount,
+        &SortOrder::Descending,
+    );
+    assert_eq!(page2.records.len(), 5);
+    assert_eq!(page2.records.get(0).unwrap().amount, 1500);
+    assert_eq!(page2.records.get(4).unwrap().amount, 1100);
+
+    // Page 3 → 1000..600
+    let page3 = client.get_merchant_payment_history(
+        &merchant,
+        &page2.next_cursor,
+        &5,
+        &None,
+        &SortField::Amount,
+        &SortOrder::Descending,
+    );
+    assert_eq!(page3.records.len(), 5);
+    assert_eq!(page3.records.get(0).unwrap().amount, 1000);
+    assert_eq!(page3.records.get(4).unwrap().amount, 600);
+
+    // Page 4 → 500..100 (last page, no cursor)
+    let page4 = client.get_merchant_payment_history(
+        &merchant,
+        &page3.next_cursor,
+        &5,
+        &None,
+        &SortField::Amount,
+        &SortOrder::Descending,
+    );
+    assert_eq!(page4.records.len(), 5);
+    assert_eq!(page4.records.get(0).unwrap().amount, 500);
+    assert_eq!(page4.records.get(4).unwrap().amount, 100);
+    assert!(page4.next_cursor.is_none(), "page 4 is the last page");
+
+    // Collect all amounts and verify no gaps or duplicates.
+    let mut all_amounts: alloc::vec::Vec<i128> = (1..=4)
+        .flat_map(|pg| {
+            let page = match pg {
+                1 => &page1,
+                2 => &page2,
+                3 => &page3,
+                _ => &page4,
+            };
+            (0..page.records.len()).map(|i| page.records.get(i as u32).unwrap().amount).collect::<alloc::vec::Vec<_>>()
+        })
+        .collect();
+    all_amounts.sort_unstable();
+    let expected: alloc::vec::Vec<i128> = (1..=20).map(|i| i * 100).collect();
+    assert_eq!(all_amounts, expected, "all 20 records must be returned once, in full");
 }

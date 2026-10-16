@@ -29,9 +29,11 @@ Versions follow **MAJOR.MINOR.PATCH** semantics:
 ## [Unreleased]
 
 ### Added
-- `docs/IDEMPOTENCY_GUIDE.md`: documents contract idempotency behaviour for `PaymentAlreadyExists` and how off-chain clients should handle duplicate submissions gracefully (closes #84).
-- `sdk/src/idempotency.ts`: `processPaymentIdempotent` helper that treats `PaymentAlreadyExists` as a successful idempotent response.
-- `sdk/src/__tests__/idempotency.test.ts`: test suite covering retry scenarios for idempotent payment submission.
+- `sdk/`: TypeScript SDK (`@pulsar-contracts/sdk`) with `createOrder`, `signOrder`, `getPublicKey`, `serializeOrder`, and `processPaymentIdempotent` helpers for off-chain order construction and signing (closes #83).
+- `sdk/package.json`: updated with npm publish config, `exports` field, `prepublishOnly` build step, Jest test runner, and pinned dependencies.
+- `sdk/.npmignore`: excludes source and test files from the published package.
+- `sdk/README.md`: comprehensive README with installation, quick start, full API docs, and links to the idempotency guide and contract API reference.
+- `README.md`: added SDK & Integrator Resources table linking to the SDK, API reference, ABI, and idempotency guide.
 
 ### Changed
 - Remove unused `StorageError` variant from the payment contract ABI.
@@ -45,14 +47,20 @@ Versions follow **MAJOR.MINOR.PATCH** semantics:
 
 ### Added
 - Initial release of the payment processing smart contract for Soroban / Stellar.
-- Merchant registration with optional whitelist mode and admin pre-approval.
-- Signature-verified single payments (`process_payment_with_signature`).
-- Multi-signature escrow payments (`initiate_multisig_payment`, `sign_multisig_payment`, `execute_multisig_payment`).
-- Full refund workflow: initiate → approve/reject → execute.
-- Paginated, filtered, and sorted payment history for merchants and payers.
-- Global payment statistics with optional date-range filtering.
-- Admin multi-sig threshold model (`set_admin`, `upgrade`).
-- Configurable cleanup period and multi-sig expiry defaults.
+- Merchant registration with optional whitelist mode and admin pre-approval; merchants are categorised as `Retail`, `Food`, `Services`, `Digital`, or `Other`.
+- Signature-verified single payments (`process_payment_with_signature`) using ed25519 merchant signatures and replay-prevention via order-ID tombstones.
+- Multi-signature escrow payments (`initiate_multisig_payment`, `sign_multisig_payment`, `execute_multisig_payment`) requiring N-of-N signers before execution.
+- Full refund workflow: initiate → approve/reject → execute, with a 30-day window plus a 1-hour grace buffer enforced via ledger timestamps.
+- Partial refund support; cumulative refunds are validated against the original payment amount.
+- Paginated, filtered, and sorted payment history for merchants (`get_merchant_payment_history`) and payers (`get_payer_payment_history`), with cursor-based pagination (max 100 results per page).
+- Per-merchant analytics (`get_merchant_stats`) with optional date-range filtering; unfiltered queries use cached counters (O(1)), filtered queries compute on-demand (O(n)).
+- Global payment statistics (`get_global_payment_stats`) accessible by admin only.
+- On-chain event emission for all state transitions: `admin_set`, `merchant_registered`, `merchant_deactivated`, `payment_processed`, `refund_initiated`, `refund_approved`, `refund_rejected`, `refund_executed`, `multisig_initiated`, `multisig_signed`, `multisig_executed`, `contract_upgraded`.
+- Admin management: one-time `set_admin` initialisation, in-place WASM `upgrade`, `get_version`, and `ping` health-check.
+- Configurable payment cleanup period (default 90 days) via `set_payment_cleanup_period`; `cleanup_expired_payments` and `archive_payment_record` for storage lifecycle management.
+- Persistent storage TTL strategy: entries are extended to ~1 year (`TTL_LEDGERS = 6,307,200`) on every read/write, with a ~6-month renewal threshold (`TTL_THRESHOLD = 3,153,600`).
+- Structured error codes (1–50) covering auth, merchant, payment, refund, multisig, and input validation failures.
 - Per-environment TOML configuration files (`config/local.toml`, `config/testnet.toml`, `config/mainnet.toml`).
-- Instance storage TTL extension on every invocation and public `bump_instance_ttl` function.
+- Docker Compose local development environment with a Stellar network container and dev container.
+- Automated `scripts/setup.sh` (idempotent; supports Ubuntu 20.04+ and macOS 12+) and `scripts/seed.sh` for environment seeding.
 - Full `///` rustdoc coverage on all public contract functions.
