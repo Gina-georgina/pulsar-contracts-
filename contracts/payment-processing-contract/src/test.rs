@@ -349,16 +349,7 @@ fn test_payment_payer_mismatch_fails() {
 #[test]
 fn test_successful_payment_with_signature() {
     let (env, client) = setup();
-    let admin = Address::generate(&env);
-    let merchant = Address::generate(&env);
-    let payer = Address::generate(&env);
-    let token = create_token(&env, &admin);
-    client.set_admin(&admins(&env, &admin), &1);
-    client.register_merchant(&merchant, &str(&env, "Store"), &str(&env, "desc"), &str(&env, "c@c.com"), &MerchantCategory::Retail, &None);
-    mint(&env, &token, &payer, 5000);
-    let order = make_order(&env, &merchant, &payer, &token);
-    let (_pk, sig) = sign_order(&env, &order);
-    client.process_payment_with_signature(&payer, &order, &sig, &zero_key(&env));
+    let (_admin, _merchant, payer, _token) = setup_paid_order(&env, &client);
     let record = client.get_payment_by_id(&payer, &bytes(&env, "ORDER_001"));
     assert_eq!(record.amount, 1000);
     assert_eq!(record.status, PaymentStatus::Completed);
@@ -367,16 +358,9 @@ fn test_successful_payment_with_signature() {
 #[test]
 fn test_duplicate_payment_fails() {
     let (env, client) = setup();
-    let admin = Address::generate(&env);
-    let merchant = Address::generate(&env);
-    let payer = Address::generate(&env);
-    let token = create_token(&env, &admin);
-    client.set_admin(&admins(&env, &admin), &1);
-    client.register_merchant(&merchant, &str(&env, "Store"), &str(&env, "desc"), &str(&env, "c@c.com"), &MerchantCategory::Retail, &None);
-    mint(&env, &token, &payer, 5000);
+    let (_admin, merchant, payer, token) = setup_paid_order(&env, &client);
     let order = make_order(&env, &merchant, &payer, &token);
     let (_pk, sig) = sign_order(&env, &order);
-    client.process_payment_with_signature(&payer, &order, &sig, &zero_key(&env));
     assert_eq!(
         client.try_process_payment_with_signature(&payer, &order, &sig, &zero_key(&env)),
         Err(Ok(PaymentError::PaymentAlreadyExists))
