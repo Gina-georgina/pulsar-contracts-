@@ -2040,6 +2040,57 @@ fn test_payment_negative_amount_fails() {
 
 // ── T-001: Real ed25519 key-pair signature tests ──────────────────────────────
 
+/// SEC-002: Verifies that process_payment_with_signature rejects a payment when
+/// the caller supplies a key that does not match the key registered on-chain.
+/// An attacker cannot substitute their own key to bypass signature verification.
+#[test]
+fn test_payment_signature_key_mismatch_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PaymentContract);
+    let client = PaymentContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let merchant = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let token = create_token(&env, &admin);
+
+    // Register merchant with key_A
+    let seed_a = [1u8; 32];
+    let signing_key_a = SigningKey::from_bytes(&seed_a);
+    let pub_key_a: BytesN<32> = BytesN::from_array(&env, &signing_key_a.verifying_key().to_bytes());
+
+    client.set_admin(&vec![&env, admin.clone()], &1);
+    client.register_merchant(
+        &merchant,
+        &str(&env, "MismatchStore"),
+        &str(&env, "desc"),
+        &str(&env, "test@store.com"),
+        &MerchantCategory::Retail,
+        &Some(pub_key_a),
+    );
+    mint(&env, &token, &payer, 5000);
+
+    let order = make_order(&env, &merchant, &payer, &token);
+
+    // Attacker signs with their own key_B (not registered for this merchant)
+    let seed_b = [99u8; 32];
+    let (attacker_key, attacker_sig) = sign_order_xdr(&env, &order, &seed_b);
+
+    // The contract must reject the signature because key_B is not bound to this merchant
+    // (contract verifies against the stored key_A, ignoring the caller-supplied key param)
+    let result = client.try_process_payment_with_signature(
+        &payer,
+        &order,
+        &attacker_sig,
+        &attacker_key,
+    );
+    assert!(
+        result.is_err(),
+        "Expected rejection when signature key does not match the on-chain bound key"
+    );
+}
+
 /// Registers a merchant with a real ed25519 public key, signs the full XDR
 /// payload with the matching private key, and asserts the payment succeeds.
 /// `mock_all_auths` is intentionally NOT used here so the signature path is

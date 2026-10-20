@@ -239,6 +239,44 @@ impl PaymentContract {
         Ok(())
     }
 
+    /// Bind or update the ed25519 signing key for a registered merchant.
+    ///
+    /// Separates key management from profile registration so that merchants can
+    /// rotate their signing key without re-registering. Only the merchant
+    /// themselves may call this function.
+    ///
+    /// `process_payment_with_signature` always verifies signatures against the
+    /// on-chain stored key, so updating this binding takes immediate effect.
+    ///
+    /// # Parameters
+    /// - `merchant_address` — The merchant updating their key; must be authenticated.
+    /// - `signing_public_key` — The new ed25519 public key to store. Pass `None`
+    ///   to clear the key and disable signature verification for this merchant.
+    ///
+    /// # Errors
+    /// - [`PaymentError::MerchantNotFound`] if no merchant is registered.
+    /// - [`PaymentError::MerchantInactive`] if the merchant is deactivated.
+    pub fn set_merchant_signing_key(
+        env: Env,
+        merchant_address: Address,
+        signing_public_key: Option<BytesN<32>>,
+    ) -> Result<(), PaymentError> {
+        storage::bump_instance_ttl(&env);
+        merchant_address.require_auth();
+        let mut merchant =
+            storage::get_merchant(&env, &merchant_address).ok_or(PaymentError::MerchantNotFound)?;
+        if !merchant.active {
+            return Err(PaymentError::MerchantInactive);
+        }
+        merchant.signing_public_key = signing_public_key;
+        storage::save_merchant(&env, &merchant);
+        env.events().publish(
+            (String::from_str(&env, "merchant_signing_key_updated"),),
+            merchant_address,
+        );
+        Ok(())
+    }
+
     // ── Payment processing ────────────────────────────────────────────────────
 
     pub fn process_payment_with_signature(
