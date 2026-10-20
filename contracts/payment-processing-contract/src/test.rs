@@ -466,9 +466,36 @@ fn test_full_refund_flow_with_balance_assertions() {
 fn test_refund_reason_length_limit() {
     let (env, client) = setup();
     let (_admin, _merchant, payer, _token) = setup_paid_order(&env, &client);
+    // 256-byte reason is accepted
     client.initiate_refund(&payer, &bytes(&env, "REFUND_OK"), &bytes(&env, "ORDER_001"), &100, &str(&env, &"r".repeat(256)));
+    // 257-byte reason is rejected — enforces the 256-byte storage-bloat guard (SEC-004)
     assert_eq!(
         client.try_initiate_refund(&payer, &bytes(&env, "REFUND_BAD"), &bytes(&env, "ORDER_001"), &100, &str(&env, &"r".repeat(257))),
+        Err(Ok(PaymentError::InvalidInput))
+    );
+}
+
+/// SEC-004: dispute_reason field must also be bounded at 256 bytes to prevent
+/// storage bloat via the dispute escalation path.
+#[test]
+fn test_dispute_reason_length_limit() {
+    let (env, client) = setup();
+    let (_admin, merchant, payer, _token) = setup_paid_order(&env, &client);
+
+    // Initiate and then reject a refund so it can be disputed
+    client.initiate_refund(&payer, &bytes(&env, "REFUND_D1"), &bytes(&env, "ORDER_001"), &100, &str(&env, "reason"));
+    client.reject_refund(&merchant, &bytes(&env, "REFUND_D1"), &None);
+
+    // 256-byte dispute reason is accepted
+    client.dispute_refund(&payer, &bytes(&env, "REFUND_D1"), &str(&env, &"d".repeat(256)));
+
+    // Reset: initiate another refund to test the over-limit case
+    client.initiate_refund(&payer, &bytes(&env, "REFUND_D2"), &bytes(&env, "ORDER_001"), &100, &str(&env, "reason"));
+    client.reject_refund(&merchant, &bytes(&env, "REFUND_D2"), &None);
+
+    // 257-byte dispute reason must be rejected (SEC-004)
+    assert_eq!(
+        client.try_dispute_refund(&payer, &bytes(&env, "REFUND_D2"), &str(&env, &"d".repeat(257))),
         Err(Ok(PaymentError::InvalidInput))
     );
 }
