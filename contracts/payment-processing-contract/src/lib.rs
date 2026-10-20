@@ -140,6 +140,24 @@ impl PaymentContract {
         Ok(())
     }
 
+    /// Enable or disable admin-whitelist mode for merchant registration.
+    ///
+    /// # Anti-spam mechanism (SEC-003)
+    /// When whitelist mode is **enabled**, `register_merchant` requires the
+    /// merchant address to be pre-approved by an admin before registration
+    /// succeeds. This prevents unrestricted storage spam — an attacker cannot
+    /// register unlimited merchants without admin approval, making large-scale
+    /// storage-inflation attacks economically and operationally infeasible.
+    ///
+    /// When disabled (default), any address may register freely. Enable this
+    /// mode on mainnet deployments where open registration is not desired.
+    ///
+    /// # Parameters
+    /// - `admins` — Admin addresses satisfying the multi-sig threshold.
+    /// - `enabled` — `true` to require pre-approval; `false` for open registration.
+    ///
+    /// # Errors
+    /// - [`PaymentError::Unauthorized`] if the admin multi-sig check fails.
     pub fn set_whitelist_mode(
         env: Env,
         admins: Vec<Address>,
@@ -151,6 +169,18 @@ impl PaymentContract {
         Ok(())
     }
 
+    /// Pre-approve a merchant address for registration when whitelist mode is on.
+    ///
+    /// Must be called by an admin before the merchant calls `register_merchant`.
+    /// Has no effect when whitelist mode is disabled (pre-approval is always
+    /// accepted in that case, acting as an early-approval for future use).
+    ///
+    /// # Parameters
+    /// - `admins` — Admin addresses satisfying the multi-sig threshold.
+    /// - `merchant_address` — Address to whitelist.
+    ///
+    /// # Errors
+    /// - [`PaymentError::Unauthorized`] if the admin multi-sig check fails.
     pub fn approve_merchant_registration(
         env: Env,
         admins: Vec<Address>,
