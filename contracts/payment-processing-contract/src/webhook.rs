@@ -1,7 +1,35 @@
 /// Webhook Management System
 /// 
 /// Infrastructure for notifying external systems of payment events (completed, failed, refunded, etc.).
-/// Provides secure webhook delivery with HMAC signing, retry logic, and delivery tracking.
+/// Provides secure webhook delivery with HMAC-SHA256 signing, retry logic, and delivery tracking.
+/// 
+/// # Outbound payload signing (BE-013)
+/// Every webhook delivery MUST include an `X-Pulsar-Signature` header so that
+/// merchant endpoints can verify the payload originated from Pulsar and has not
+/// been tampered with.
+///
+/// The header value is `sha256=<hex-encoded HMAC-SHA256>` where the HMAC is
+/// computed over the raw JSON body bytes using the per-merchant `secret_key`
+/// stored in [`WebhookRegistration`].
+///
+/// ## Verification example (Python)
+/// ```python
+/// import hmac, hashlib
+///
+/// def verify_pulsar_signature(body: bytes, secret: bytes, header: str) -> bool:
+///     expected = "sha256=" + hmac.new(secret, body, hashlib.sha256).hexdigest()
+///     return hmac.compare_digest(expected, header)
+/// ```
+///
+/// ## Verification example (Node.js)
+/// ```js
+/// const crypto = require('crypto');
+/// function verifyPulsarSignature(body, secret, header) {
+///   const sig = 'sha256=' + crypto.createHmac('sha256', secret)
+///                                  .update(body).digest('hex');
+///   return crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(header));
+/// }
+/// ```
 /// 
 /// Acceptance Criteria:
 /// - Register/update/delete webhooks endpoint
@@ -17,6 +45,63 @@ use alloc::vec::Vec as RustVec;
 use soroban_sdk::{Address, Bytes, BytesN, Env, String, Vec};
 
 use crate::error::PaymentError;
+
+// ── HMAC-SHA256 signing (BE-013) ──────────────────────────────────────────────
+
+/// Compute an HMAC-SHA256 over `payload` with `secret_key` and return the
+/// raw 32-byte digest. The caller should hex-encode this for the header.
+///
+/// Used by the off-chain webhook delivery layer to produce the value for the
+/// `X-Pulsar-Signature: sha256=<hex>` header on every outbound request.
+#[cfg(feature = "scaffold")]
+pub fn compute_hmac_sha256(secret_key: &[u8], payload: &[u8]) -> [u8; 32] {
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+
+    type HmacSha256 = Hmac<Sha256>;
+
+    let mut mac = HmacSha256::new_from_slice(secret_key)
+        .expect("HMAC can accept any key length");
+    mac.update(payload);
+    let result = mac.finalize();
+    let bytes = result.into_bytes();
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&bytes);
+    out
+}
+
+/// Encode a 32-byte digest as a lowercase hex string.
+/// Returns a fixed 64-character ASCII string.
+#[cfg(feature = "scaffold")]
+pub fn hex_encode(bytes: &[u8; 32]) -> alloc::string::String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut s = alloc::string::String::with_capacity(64);
+    for &b in bytes.iter() {
+        s.push(HEX[(b >> 4) as usize] as char);
+        s.push(HEX[(b & 0xf) as usize] as char);
+    }
+    s
+}
+
+/// Build the full `X-Pulsar-Signature` header value for a webhook payload.
+///
+/// The format is `sha256=<lowercase-hex-digest>`, matching the convention used
+/// by GitHub and Stripe webhooks so that merchant verification libraries can
+/// be reused with minimal adaptation.
+///
+/// # Parameters
+/// - `secret_key` — The per-merchant secret stored in [`WebhookRegistration`].
+/// - `payload`    — The raw JSON bytes that will be sent as the request body.
+///
+/// # Returns
+/// A string of the form `sha256=abcdef0123...` (68 characters total).
+#[cfg(feature = "scaffold")]
+pub fn build_signature_header(secret_key: &[u8], payload: &[u8]) -> alloc::string::String {
+    let digest = compute_hmac_sha256(secret_key, payload);
+    let mut header = alloc::string::String::from("sha256=");
+    header.push_str(&hex_encode(&digest));
+    header
+}
 
 /// Types of webhook events
 #[derive(Clone, Debug)]
@@ -391,5 +476,49 @@ mod tests {
         assert_eq!(WebhookEventType::PaymentCompleted.to_string(), "payment.completed");
         assert_eq!(WebhookEventType::PaymentFailed.to_string(), "payment.failed");
         assert_eq!(WebhookEventType::RefundInitiated.to_string(), "refund.initiated");
+    }
+
+    // ── BE-013: HMAC-SHA256 signing tests ─────────────────────────────────────
+
+    #[cfg(feature = "scaffold")]
+    #[test]
+    fn test_hmac_signature_is_deterministic() {
+        let secret = b"test-secret-key";
+        let payload = br#"{"event":"payment.completed","order_id":"ORDER_001"}"#;
+        let sig1 = compute_hmac_sha256(secret, payload);
+        let sig2 = compute_hmac_sha256(secret, payload);
+        assert_eq!(sig1, sig2, "HMAC must be deterministic");
+    }
+
+    #[cfg(feature = "scaffold")]
+    #[test]
+    fn test_hmac_different_secrets_produce_different_signatures() {
+        let payload = br#"{"event":"payment.completed"}"#;
+        let sig_a = compute_hmac_sha256(b"secret-merchant-a", payload);
+        let sig_b = compute_hmac_sha256(b"secret-merchant-b", payload);
+        assert_ne!(sig_a, sig_b, "Different secrets must produce different HMACs");
+    }
+
+    #[cfg(feature = "scaffold")]
+    #[test]
+    fn test_hmac_tampered_payload_produces_different_signature() {
+        let secret = b"shared-secret";
+        let original = br#"{"amount":1000}"#;
+        let tampered = br#"{"amount":9999}"#;
+        let sig_orig = compute_hmac_sha256(secret, original);
+        let sig_tamp = compute_hmac_sha256(secret, tampered);
+        assert_ne!(sig_orig, sig_tamp, "Tampered payload must produce a different HMAC");
+    }
+
+    #[cfg(feature = "scaffold")]
+    #[test]
+    fn test_build_signature_header_format() {
+        let secret = b"my-secret";
+        let payload = b"hello";
+        let header = build_signature_header(secret, payload);
+        assert!(header.starts_with("sha256="), "Header must start with 'sha256='");
+        assert_eq!(header.len(), 71, "sha256= (7) + 64 hex chars = 71");
+        assert!(header[7..].chars().all(|c| c.is_ascii_hexdigit()),
+                "Digest must be lowercase hex");
     }
 }
