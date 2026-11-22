@@ -191,10 +191,44 @@ Record, outside your terminal history:
 Only after this verification step should the mainnet contract ID be shared
 with downstream integrators or put in front of real payment volume.
 
+## Production container image
+
+The repository ships a multi-stage [`Dockerfile`](../Dockerfile) for
+production use. Do **not** use `Dockerfile.dev` in production — it installs
+dev dependencies and debug tooling.
+
+Build the image from the exact commit/tag being deployed (the build stage
+compiles the release WASM; the runtime stage is based on
+`debian:bookworm-slim` and contains only the compiled WASM binary and its
+config — no `cargo`, no `npm`, no dev dependencies):
+
+```bash
+docker build -t pulsar-contract:<tag> .
+```
+
+Run it (mount the config directory and pass any required environment
+variables):
+
+```bash
+docker run --rm \
+  -v "$(pwd)/config:/app/config:ro" \
+  --env-file .env.production \
+  pulsar-contract:<tag>
+```
+
+CI builds this production image and scans it with Trivy on every push; a
+build or scan failure blocks the pipeline. To reproduce the scan locally:
+
+```bash
+docker build -t pulsar-contract:<tag> .
+trivy image --severity HIGH,CRITICAL pulsar-contract:<tag>
+```
+
 ## See also
 
 - [`README.md`](../README.md) — local/testnet setup, environment seeding,
   general contract usage.
+- [`Dockerfile`](../Dockerfile) — multi-stage production image definition.
 - [`docs/reproducible-builds.md`](reproducible-builds.md) — rebuilding the
   WASM byte-for-byte to verify what was deployed.
 - [`docs/security-audit.md`](security-audit.md) — audit status and scope.

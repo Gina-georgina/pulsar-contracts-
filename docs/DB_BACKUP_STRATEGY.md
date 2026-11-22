@@ -6,8 +6,18 @@ This document describes the automated backup and recovery strategy for the Pulsa
 
 - A daily GitHub Actions workflow runs at `02:00 UTC`.
 - The workflow executes `scripts/db-backup.sh`.
-- Backups are created using `pg_dump --format=custom` and verified with `pg_restore --list`.
+- Backups are created using `pg_dump --format=custom`.
 - Successful backups are uploaded to off-site storage when `AWS_S3_BUCKET` is configured.
+
+## Backup integrity verification
+
+After `pg_dump` completes, the backup script verifies the dump before treating the backup as successful:
+
+- The dump file must be larger than `0` bytes. An empty or missing dump file fails the check.
+- `pg_restore --list` must succeed against the dump, confirming the file is a parseable custom-format archive.
+- If either check fails, the script logs an error and exits with a non-zero status, so the workflow fails instead of silently producing a corrupt backup.
+
+CI runs a backup test against a small test database: it creates a throwaway database, runs `scripts/db-backup.sh` against it, and asserts that the resulting dump passes the integrity checks.
 
 ## Backup retention
 

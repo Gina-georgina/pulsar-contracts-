@@ -36,5 +36,26 @@ services:
     stdin_open: true
     tty: true
 
+  # Monitoring service for the Pulsar contract
+  monitoring:
+    build:
+      context: ./monitoring
+      dockerfile: Dockerfile
+    container_name: pulsar-monitoring
+    environment:
+      - CONTRACT_ID=${CONTRACT_ID:-}
+      - HORIZON_URL=${HORIZON_URL:-http://stellar-local:8000}
+      - POLL_INTERVAL_MS=${POLL_INTERVAL_MS:-5000}
+      - PING_INTERVAL_MS=${PING_INTERVAL_MS:-60000}
+      - REFUND_RATE_THRESHOLD=${REFUND_RATE_THRESHOLD:-0.1}
+      - REFUND_RATE_WINDOW_MS=${REFUND_RATE_WINDOW_MS:-300000}
+      - LARGE_PAYMENT_THRESHOLD=${LARGE_PAYMENT_THRESHOLD:-1000}
+      - ERROR_RATE_THRESHOLD=${ERROR_RATE_THRESHOLD:-0.05}
+      - ALERT_WEBHOOK_URL=${ALERT_WEBHOOK_URL:-}
+    depends_on:
+      stellar-local:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   cargo-cache:
