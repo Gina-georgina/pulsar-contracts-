@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { nativeToScVal, scValToNative, xdr } from "@stellar/stellar-sdk";
-import { invoke, view } from "../contractClient.js";
+import { invoke, view, validateStellarAddress } from "../contractClient.js";
 
 const router = Router();
 
@@ -13,6 +13,17 @@ router.post("/", async (req, res, next) => {
     const { payer, order, signature } = req.body;
     if (!payer || !order || !signature) {
       return res.status(422).json({ error: { code: "InvalidInput", message: "Missing required fields" } });
+    }
+    const addressFields = [
+      ["payer", payer],
+      ["order.merchant_address", order.merchant_address],
+      ["order.payer", order.payer],
+      ["order.token", order.token],
+    ];
+    for (const [field, value] of addressFields) {
+      if (!validateStellarAddress(value)) {
+        return res.status(422).json({ error: { code: "InvalidAddress", message: `${field} is not a valid Stellar address` } });
+      }
     }
     await invoke("process_payment_with_signature", [
       nativeToScVal(payer, { type: "address" }),
@@ -35,6 +46,9 @@ router.get("/:id", async (req, res, next) => {
     if (!caller) {
       return res.status(422).json({ error: { code: "InvalidInput", message: "caller query param required" } });
     }
+    if (!validateStellarAddress(caller)) {
+      return res.status(422).json({ error: { code: "InvalidAddress", message: "caller is not a valid Stellar address" } });
+    }
     const result = await view("get_payment_by_id", [
       nativeToScVal(caller, { type: "address" }),
       nativeToScVal(Buffer.from(req.params.id), { type: "bytes" }),
@@ -54,6 +68,9 @@ router.get("/", async (req, res, next) => {
     const { merchant, cursor, limit = 10, date_start, date_end, amount_min, amount_max, status = "Any", sort_field = "Date", sort_order = "Descending" } = req.query;
     if (!merchant) {
       return res.status(422).json({ error: { code: "InvalidInput", message: "merchant query param required" } });
+    }
+    if (!validateStellarAddress(merchant)) {
+      return res.status(422).json({ error: { code: "InvalidAddress", message: "merchant is not a valid Stellar address" } });
     }
 
     const filter = buildFilter({ date_start, date_end, amount_min, amount_max, status });
