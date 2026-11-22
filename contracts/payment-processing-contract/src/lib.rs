@@ -48,6 +48,7 @@ impl PaymentContract {
     /// One-time admin initialisation. Stores the first admin address.
     pub fn set_admin(env: Env, admins: Vec<Address>, threshold: u32) -> Result<(), PaymentError> {
         storage::bump_instance_ttl(&env);
+        if storage::is_paused(&env) { return Err(PaymentError::ContractPaused); }
         if storage::get_admin_config(&env).is_some() || storage::get_admin(&env).is_some() {
             return Err(PaymentError::AdminAlreadySet);
         }
@@ -88,6 +89,7 @@ impl PaymentContract {
         new_admin: Address,
     ) -> Result<(), PaymentError> {
         storage::bump_instance_ttl(&env);
+        if storage::is_paused(&env) { return Err(PaymentError::ContractPaused); }
         // Require auth from both parties — proves the new key is live.
         current_admin.require_auth();
         new_admin.require_auth();
@@ -121,6 +123,7 @@ impl PaymentContract {
 
     pub fn upgrade(env: Env, admin: Address, new_wasm_hash: BytesN<32>) -> Result<(), PaymentError> {
         storage::bump_instance_ttl(&env);
+        if storage::is_paused(&env) { return Err(PaymentError::ContractPaused); }
         helper::require_admin(&env, &admin)?;
         env.deployer().update_current_contract_wasm(new_wasm_hash);
         Ok(())
@@ -151,6 +154,7 @@ impl PaymentContract {
         new_threshold: u32,
     ) -> Result<(), PaymentError> {
         storage::bump_instance_ttl(&env);
+        if storage::is_paused(&env) { return Err(PaymentError::ContractPaused); }
         // The change must be authorised by the existing multi-sig.
         helper::require_multi_admin(&env, current_admins)?;
         if new_admins.is_empty() {
@@ -350,6 +354,7 @@ impl PaymentContract {
         tier: MerchantTier,
     ) -> Result<(), PaymentError> {
         storage::bump_instance_ttl(&env);
+        if storage::is_paused(&env) { return Err(PaymentError::ContractPaused); }
         helper::require_multi_admin(&env, admins)?;
         let mut merchant = storage::get_merchant(&env, &merchant_address)
             .ok_or(PaymentError::MerchantNotFound)?;
@@ -397,6 +402,7 @@ impl PaymentContract {
         enabled: bool,
     ) -> Result<(), PaymentError> {
         storage::bump_instance_ttl(&env);
+        if storage::is_paused(&env) { return Err(PaymentError::ContractPaused); }
         helper::require_multi_admin(&env, admins)?;
         storage::set_whitelist_enabled(&env, enabled);
         Ok(())
@@ -420,6 +426,7 @@ impl PaymentContract {
         merchant_address: Address,
     ) -> Result<(), PaymentError> {
         storage::bump_instance_ttl(&env);
+        if storage::is_paused(&env) { return Err(PaymentError::ContractPaused); }
         helper::require_multi_admin(&env, admins)?;
         storage::set_whitelisted(&env, &merchant_address, true);
         Ok(())
@@ -443,6 +450,7 @@ impl PaymentContract {
         enabled: bool,
     ) -> Result<(), PaymentError> {
         storage::bump_instance_ttl(&env);
+        if storage::is_paused(&env) { return Err(PaymentError::ContractPaused); }
         helper::require_multi_admin(&env, admins)?;
         storage::set_token_allowlist_enabled(&env, enabled);
         env.events().publish(
@@ -466,6 +474,7 @@ impl PaymentContract {
         token: Address,
     ) -> Result<(), PaymentError> {
         storage::bump_instance_ttl(&env);
+        if storage::is_paused(&env) { return Err(PaymentError::ContractPaused); }
         helper::require_multi_admin(&env, admins)?;
         storage::set_token_allowed(&env, &token, true);
         env.events().publish(
@@ -488,6 +497,7 @@ impl PaymentContract {
         token: Address,
     ) -> Result<(), PaymentError> {
         storage::bump_instance_ttl(&env);
+        if storage::is_paused(&env) { return Err(PaymentError::ContractPaused); }
         helper::require_multi_admin(&env, admins)?;
         storage::set_token_allowed(&env, &token, false);
         env.events().publish(
@@ -571,6 +581,7 @@ impl PaymentContract {
         admin_authorizers: Option<Vec<Address>>,
     ) -> Result<(), PaymentError> {
         storage::bump_instance_ttl(&env);
+        if storage::is_paused(&env) { return Err(PaymentError::ContractPaused); }
         if let Some(admins) = admin_authorizers {
             helper::require_multi_admin(&env, admins)?;
         } else {
@@ -617,6 +628,7 @@ impl PaymentContract {
         contact_info: String,
     ) -> Result<(), PaymentError> {
         storage::bump_instance_ttl(&env);
+        if storage::is_paused(&env) { return Err(PaymentError::ContractPaused); }
         merchant_address.require_auth();
         helper::validate_merchant_fields(&name, &description, &contact_info)?;
         let mut merchant =
@@ -655,6 +667,7 @@ impl PaymentContract {
         signing_public_key: Option<BytesN<32>>,
     ) -> Result<(), PaymentError> {
         storage::bump_instance_ttl(&env);
+        if storage::is_paused(&env) { return Err(PaymentError::ContractPaused); }
         merchant_address.require_auth();
         let mut merchant =
             storage::get_merchant(&env, &merchant_address).ok_or(PaymentError::MerchantNotFound)?;
@@ -1221,6 +1234,7 @@ impl PaymentContract {
         _order_id: Bytes,
         _refunded_amount: i128,
     ) -> Result<(), PaymentError> {
+        if storage::is_paused(&env) { return Err(PaymentError::ContractPaused); }
         // Intentionally disabled: refund state is managed exclusively via the
         // initiate/approve/execute refund workflow.
         Err(PaymentError::InvalidInput)
@@ -1864,6 +1878,7 @@ impl PaymentContract {
         refund_id: Bytes,
         reason: String,
     ) -> Result<(), PaymentError> {
+        storage::bump_instance_ttl(&env);
         if storage::is_paused(&env) { return Err(PaymentError::ContractPaused); }
         caller.require_auth();
 
@@ -1909,6 +1924,7 @@ impl PaymentContract {
         refund_id: Bytes,
         approve: bool,
     ) -> Result<(), PaymentError> {
+        storage::bump_instance_ttl(&env);
         if storage::is_paused(&env) { return Err(PaymentError::ContractPaused); }
         helper::require_multi_admin(&env, admins.clone())?;
 
@@ -2247,5 +2263,270 @@ impl PaymentContract {
             next_cursor,
             total,
         })
+    }
+}
+
+#[cfg(test)]
+mod pause_tests {
+    use super::*;
+    use soroban_sdk::testutils::{Address as _, Ledger as _};
+    use soroban_sdk::token::{Client as TokenClient, StellarAssetClient};
+
+    fn setup(env: &Env) -> (PaymentContractClient<'static>, Address, Address) {
+        env.mock_all_auths();
+        let contract_id = env.register(PaymentContract, ());
+        let client = PaymentContractClient::new(env, &contract_id);
+        let admin = Address::generate(env);
+        let mut admins = Vec::new(env);
+        admins.push_back(admin.clone());
+        client.set_admin(&admins, &1u32);
+        (client, admin, contract_id)
+    }
+
+    fn make_token(env: &Env, payer: &Address) -> Address {
+        let token_admin = Address::generate(env);
+        let token_id = env.register_stellar_asset_contract_v2(token_admin.clone()).address();
+        let sac = StellarAssetClient::new(env, &token_id);
+        sac.mint(payer, &1_000_000i128);
+        token_id
+    }
+
+    fn register_merchant(env: &Env, client: &PaymentContractClient, merchant: &Address) {
+        client.register_merchant(
+            merchant,
+            &String::from_str(env, "Merchant"),
+            &String::from_str(env, "desc"),
+            &String::from_str(env, "contact"),
+            &MerchantCategory::Retail,
+            &None,
+        );
+    }
+
+    fn make_order(env: &Env, payer: &Address, merchant: &Address, token: &Address, id: &str) -> PaymentOrder {
+        PaymentOrder {
+            order_id: Bytes::from_slice(env, id.as_bytes()),
+            merchant_address: merchant.clone(),
+            payer: payer.clone(),
+            token: token.clone(),
+            amount: 100i128,
+            description: String::from_str(env, "order"),
+            metadata: String::from_str(env, ""),
+            expires_at: 0,
+        }
+    }
+
+    fn assert_paused<T: core::fmt::Debug>(res: Result<T, PaymentError>) {
+        match res {
+            Err(PaymentError::ContractPaused) => {}
+            other => panic!("expected ContractPaused, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_all_mutating_functions_blocked_when_paused() {
+        let env = Env::default();
+        env.ledger().set_timestamp(1_000_000);
+        let (client, admin, _cid) = setup(&env);
+        let payer = Address::generate(&env);
+        let merchant = Address::generate(&env);
+        let token = make_token(&env, &payer);
+        register_merchant(&env, &client, &merchant);
+
+        let mut admins = Vec::new(&env);
+        admins.push_back(admin.clone());
+
+        client.pause(&admin);
+        assert!(client.is_paused());
+
+        // Admin / config setters
+        assert_paused(client.try_set_admin(&admins, &1u32));
+        assert_paused(client.try_transfer_admin(&admin, &Address::generate(&env)));
+        assert_paused(client.try_upgrade(&admin, &BytesN::from_array(&env, &[0u8; 32])));
+        assert_paused(client.try_update_admin_config(&admins, &admins, &1u32));
+
+        // Merchant management
+        let new_merchant = Address::generate(&env);
+        assert_paused(client.try_register_merchant(
+            &new_merchant,
+            &String::from_str(&env, "M"),
+            &String::from_str(&env, "d"),
+            &String::from_str(&env, "c"),
+            &MerchantCategory::Retail,
+            &None,
+        ));
+        assert_paused(client.try_set_merchant_tier(&admins, &merchant, &MerchantTier::Verified));
+        assert_paused(client.try_set_whitelist_mode(&admins, &true));
+        assert_paused(client.try_approve_merchant_registration(&admins, &new_merchant));
+        assert_paused(client.try_deactivate_merchant(&merchant, &merchant, &None));
+        assert_paused(client.try_update_merchant(
+            &merchant,
+            &String::from_str(&env, "n"),
+            &String::from_str(&env, "d"),
+            &String::from_str(&env, "c"),
+        ));
+        assert_paused(client.try_set_merchant_signing_key(&merchant, &None));
+
+        // Token allowlist
+        assert_paused(client.try_set_token_allowlist_mode(&admins, &true));
+        assert_paused(client.try_add_allowed_token(&admins, &token));
+        assert_paused(client.try_remove_allowed_token(&admins, &token));
+
+        // Payments
+        let order = make_order(&env, &payer, &merchant, &token, "order-1");
+        assert_paused(client.try_process_payment_with_signature(
+            &payer,
+            &order,
+            &BytesN::from_array(&env, &[0u8; 64]),
+            &BytesN::from_array(&env, &[0u8; 32]),
+        ));
+        let mut orders = Vec::new(&env);
+        orders.push_back(order.clone());
+        assert_paused(client.try_process_batch_payments(&payer, &orders));
+        assert_paused(client.try_update_payment_status(
+            &payer,
+            &order.order_id,
+            &0i128,
+        ));
+        assert_paused(client.try_archive_payment_record(&admins, &order.order_id));
+        assert_paused(client.try_cleanup_expired_payments(&admins));
+        assert_paused(client.try_set_payment_cleanup_period(&admins, &100u64));
+        assert_paused(client.try_set_default_multisig_expiry(&admins, &3600u64));
+
+        // Refunds
+        let refund_id = Bytes::from_slice(&env, b"refund-1");
+        assert_paused(client.try_initiate_refund(
+            &payer,
+            &refund_id,
+            &order.order_id,
+            &10i128,
+            &String::from_str(&env, "reason"),
+        ));
+        assert_paused(client.try_approve_refund(&merchant, &refund_id, &None));
+        assert_paused(client.try_reject_refund(&merchant, &refund_id, &None));
+        assert_paused(client.try_execute_refund(&merchant, &refund_id));
+        assert_paused(client.try_dispute_refund(
+            &payer,
+            &refund_id,
+            &String::from_str(&env, "dispute"),
+        ));
+        assert_paused(client.try_resolve_dispute(&admins, &refund_id, &true));
+
+        // Multisig
+        let ms_id = Bytes::from_slice(&env, b"ms-1");
+        let mut signers = Vec::new(&env);
+        signers.push_back(payer.clone());
+        assert_paused(client.try_initiate_multisig_payment(
+            &payer,
+            &ms_id,
+            &order,
+            &signers,
+        ));
+        assert_paused(client.try_sign_multisig_payment(&payer, &ms_id));
+        assert_paused(client.try_execute_multisig_payment(&payer, &ms_id));
+
+        // Subscriptions
+        let sub_id = Bytes::from_slice(&env, b"sub-1");
+        let plan = types::SubscriptionPlan {
+            token: token.clone(),
+            amount: 100i128,
+            interval: 3600u64,
+        };
+        assert_paused(client.try_create_subscription(&payer, &merchant, &sub_id, &plan));
+        assert_paused(client.try_cancel_subscription(&payer, &sub_id));
+        assert_paused(client.try_process_subscription_payment(&payer, &sub_id));
+    }
+
+    #[test]
+    fn test_read_functions_accessible_when_paused() {
+        let env = Env::default();
+        env.ledger().set_timestamp(1_000_000);
+        let (client, admin, _cid) = setup(&env);
+        let payer = Address::generate(&env);
+        let merchant = Address::generate(&env);
+        let token = make_token(&env, &payer);
+        register_merchant(&env, &client, &merchant);
+
+        let mut admins = Vec::new(&env);
+        admins.push_back(admin.clone());
+
+        // Process one payment before pausing so queries have data.
+        let order = make_order(&env, &payer, &merchant, &token, "order-1");
+        client.process_payment_with_signature(
+            &payer,
+            &order,
+            &BytesN::from_array(&env, &[0u8; 64]),
+            &BytesN::from_array(&env, &[0u8; 32]),
+        );
+
+        client.pause(&admin);
+        assert!(client.is_paused());
+
+        // All read-only entry points must remain accessible.
+        assert!(client.get_version() >= 1);
+        let _ = client.ping();
+        let _ = client.get_admin_config();
+        let _ = client.get_merchant(&merchant);
+        let _ = client.get_merchant_tier(&merchant);
+        let _ = client.is_token_allowed(&token);
+        let _ = client.get_payment_by_id(&payer, &order.order_id);
+        let _ = client.get_payment_receipt(&payer, &order.order_id);
+        let _ = client.get_merchant_payment_history(
+            &merchant,
+            &None,
+            &10u32,
+            &None,
+            &SortField::Date,
+            &SortOrder::Ascending,
+        );
+        let _ = client.get_payer_payment_history(
+            &payer,
+            &None,
+            &10u32,
+            &None,
+            &SortField::Date,
+            &SortOrder::Ascending,
+        );
+        let _ = client.get_global_payment_stats(&admins, &None, &None);
+        let _ = client.get_merchant_stats(&merchant, &merchant, &None, &None);
+        let refund_id = Bytes::from_slice(&env, b"missing");
+        let _ = client.try_get_refund_status(&refund_id);
+        let sub_id = Bytes::from_slice(&env, b"missing");
+        let _ = client.try_get_subscription(&sub_id);
+        let _ = client.list_subscriptions_by_merchant(&merchant, &None, &10u32);
+    }
+
+    #[test]
+    fn test_unpause_restores_normal_operation() {
+        let env = Env::default();
+        env.ledger().set_timestamp(1_000_000);
+        let (client, admin, _cid) = setup(&env);
+        let payer = Address::generate(&env);
+        let merchant = Address::generate(&env);
+        let token = make_token(&env, &payer);
+        register_merchant(&env, &client, &merchant);
+
+        client.pause(&admin);
+        assert!(client.is_paused());
+
+        let order = make_order(&env, &payer, &merchant, &token, "order-1");
+        assert_paused(client.try_process_payment_with_signature(
+            &payer,
+            &order,
+            &BytesN::from_array(&env, &[0u8; 64]),
+            &BytesN::from_array(&env, &[0u8; 32]),
+        ));
+
+        client.unpause(&admin);
+        assert!(!client.is_paused());
+
+        // Representative mutating call now succeeds.
+        client.process_payment_with_signature(
+            &payer,
+            &order,
+            &BytesN::from_array(&env, &[0u8; 64]),
+            &BytesN::from_array(&env, &[0u8; 32]),
+        );
+        let record = client.get_payment_by_id(&payer, &order.order_id);
+        assert_eq!(record.amount, order.amount);
     }
 }

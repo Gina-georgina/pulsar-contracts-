@@ -188,6 +188,28 @@ following private channels:
 See [SECURITY.md](SECURITY.md) for the full disclosure policy, response SLA,
 and the list of information to include in your report.
 
+## Secret Rotation & Offboarding
+
+Secrets such as `TESTNET_SECRET_KEY` and other CI credentials must be rotated
+whenever a team member leaves the project or changes role, and on a regular
+schedule regardless. The full procedure for each secret is documented in
+[docs/SECRET_ROTATION.md](docs/SECRET_ROTATION.md).
+
+**Offboarding checklist** (run when a maintainer or contributor with secret
+access departs or changes role):
+
+- [ ] Revoke the departing member's GitHub access (organisation membership,
+      repository collaborator access, and any deploy keys or PATs they created).
+- [ ] Rotate `TESTNET_SECRET_KEY` and any mainnet keys they had access to,
+      following [docs/SECRET_ROTATION.md](docs/SECRET_ROTATION.md).
+- [ ] Rotate any secrets shared via `.env` files (local or CI-provided) that
+      the member could read.
+- [ ] Record the rotation date and the person who performed it in the rotation
+      log described in [docs/SECRET_ROTATION.md](docs/SECRET_ROTATION.md).
+
+**Recommended schedule:** rotate all secrets **annually**, and additionally on
+any role change, suspected compromise, or offboarding event.
+
 ## License
 
 By contributing you agree that your contributions will be licensed under the [MIT License](LICENSE).

@@ -7,6 +7,8 @@ on:
     branches: [main, develop]
   schedule:
     - cron: '0 6 * * 1'  # Weekly on Monday at 06:00 UTC
+    - cron: '0 3 * * *'  # Nightly at 03:00 UTC — fuzz run (T-023)
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -437,6 +439,54 @@ jobs:
           ADMIN_SECRET: ${{ secrets.TESTNET_SECRET_KEY }}
           NETWORK: testnet
         run: bash scripts/smoke-test.sh
+
+  # T-023: Nightly fuzz run for request_validation.rs input sanitisation.
+  # Exercises all string validation functions (merchant name, description,
+  # contact_info) with arbitrary byte inputs via cargo-fuzz. Runs for at least
+  # 10 minutes (600s) and uploads any crash artifacts for triage.
+  # See docs/fuzz-and-property-tests.md for how to run locally.
+  fuzz:
+    name: Fuzz (request_validation)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Get rustc version
+        id: rustc-version
+        run: echo "version=$(rustc --version | tr ' ' '-')" >> "$GITHUB_OUTPUT"
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-fuzz-${{ steps.rustc-version.outputs.version }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-fuzz-${{ steps.rustc-version.outputs.version }}-
+            ${{ runner.os }}-cargo-fuzz-
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+
+      - name: Run fuzz target (request_validation)
+        # Runs for at least 10 minutes (600s). Any crash causes a non-zero exit.
+        run: cargo fuzz run request_validation -- -max_total_time=600
+        working-directory: contracts/payment-processing-contract
+
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crash-request_validation
+          path: contracts/payment-processing-contract/fuzz/artifacts/request_validation/
+          retention-days: 30
+          if-no-files-found: ignore
 
   # SEC-008: Scheduled weekly job that refreshes the cargo-audit advisory
   # database and re-runs the audit so that newly published advisories are

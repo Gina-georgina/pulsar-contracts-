@@ -1534,6 +1534,101 @@ fn test_dispute_refund_unauthorized_fails() {
     assert_eq!(result, Err(Ok(PaymentError::DisputeUnauthorized)));
 }
 
+// ── T-021: full lifecycle integration test ────────────────────────────────────
+
+/// T-021: End-to-end lifecycle covering merchant registration → payment →
+/// refund initiation → merchant rejection → payer dispute → admin resolution.
+/// Intermediate state is asserted after every step via `get_payment_by_id` and
+/// `get_refund`.
+#[test]
+fn test_full_payment_refund_dispute_lifecycle() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let merchant = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let token = create_token(&env, &admin);
+
+    client.set_admin(&admins(&env, &admin), &1);
+
+    // 1. Register merchant.
+    client.register_merchant(
+        &merchant,
+        &str(&env, "Lifecycle Store"),
+        &str(&env, "desc"),
+        &str(&env, "lifecycle@store.com"),
+        &MerchantCategory::Retail,
+        &None,
+    );
+    let m = client.get_merchant(&merchant);
+    assert!(m.active);
+    assert_eq!(m.name, str(&env, "Lifecycle Store"));
+
+    // 2. Process payment.
+    mint(&env, &token, &payer, 5000);
+    let order = make_order(&env, &merchant, &payer, &token);
+    let (_pk, sig) = sign_order(&env, &order);
+    client.process_payment_with_signature(&payer, &order, &sig, &zero_key(&env));
+
+    let record = client.get_payment_by_id(&payer, &bytes(&env, "ORDER_001"));
+    assert_eq!(record.status, PaymentStatus::Completed);
+    assert_eq!(record.amount, 1000);
+    assert_eq!(record.refunded_amount, 0);
+    assert_eq!(record.pending_refund_amount, 0);
+
+    // 3. Initiate refund.
+    let refund_id = bytes(&env, "REFUND_LIFECYCLE");
+    client.initiate_refund(
+        &payer,
+        &refund_id,
+        &bytes(&env, "ORDER_001"),
+        &500,
+        &str(&env, "Customer request"),
+    );
+
+    let refund = client.get_refund(&refund_id);
+    assert_eq!(refund.status, RefundStatus::Pending);
+    assert_eq!(refund.amount, 500);
+    assert_eq!(refund.order_id, bytes(&env, "ORDER_001"));
+
+    let record = client.get_payment_by_id(&payer, &bytes(&env, "ORDER_001"));
+    assert_eq!(record.status, PaymentStatus::Completed);
+    assert_eq!(record.refunded_amount, 0);
+    assert_eq!(record.pending_refund_amount, 500);
+
+    // 4. Merchant rejects the refund.
+    client.reject_refund(&merchant, &refund_id, &None);
+
+    let refund = client.get_refund(&refund_id);
+    assert_eq!(refund.status, RefundStatus::Rejected);
+
+    let record = client.get_payment_by_id(&payer, &bytes(&env, "ORDER_001"));
+    assert_eq!(record.status, PaymentStatus::Completed);
+    assert_eq!(record.refunded_amount, 0);
+    assert_eq!(record.pending_refund_amount, 0);
+
+    // 5. Payer disputes the rejection.
+    client.dispute_refund(&payer, &refund_id, &str(&env, "Merchant refused valid refund"));
+
+    let refund = client.get_refund(&refund_id);
+    assert_eq!(refund.status, RefundStatus::Disputed);
+
+    let record = client.get_payment_by_id(&payer, &bytes(&env, "ORDER_001"));
+    assert_eq!(record.status, PaymentStatus::Completed);
+    assert_eq!(record.refunded_amount, 0);
+    assert_eq!(record.pending_refund_amount, 0);
+
+    // 6. Admin resolves the dispute in the payer's favour.
+    client.resolve_dispute(&admins(&env, &admin), &refund_id, &true);
+
+    let refund = client.get_refund(&refund_id);
+    assert_eq!(refund.status, RefundStatus::Completed);
+
+    let record = client.get_payment_by_id(&payer, &bytes(&env, "ORDER_001"));
+    assert_eq!(record.status, PaymentStatus::PartiallyRefunded);
+    assert_eq!(record.refunded_amount, 500);
+    assert_eq!(record.pending_refund_amount, 0);
+}
+
 // ── Multisig tests ────────────────────────────────────────────────────────────
 
 #[test]
