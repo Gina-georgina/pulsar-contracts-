@@ -2215,6 +2215,167 @@ fn test_max_pending_refunds_per_order() {
 }
 
 
+// ── Feature flag tests ────────────────────────────────────────────────────────
+
+/// Flags default to disabled when never set by the admin.
+#[test]
+fn test_feature_flags_default_to_disabled() {
+    let (env, client) = setup();
+    assert!(!client.is_feature_enabled(&str(&env, "subscriptions_enabled")));
+    assert!(!client.is_feature_enabled(&str(&env, "token_allowlist_enforced")));
+    // Unknown flags also default to disabled.
+    assert!(!client.is_feature_enabled(&str(&env, "some_unknown_flag")));
+}
+
+#[test]
+fn test_set_and_get_feature_flag() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    client.set_admin(&admins(&env, &admin), &1);
+
+    client.set_feature_flag(&admins(&env, &admin), &str(&env, "subscriptions_enabled"), &true);
+    assert!(client.is_feature_enabled(&str(&env, "subscriptions_enabled")));
+
+    client.set_feature_flag(&admins(&env, &admin), &str(&env, "subscriptions_enabled"), &false);
+    assert!(!client.is_feature_enabled(&str(&env, "subscriptions_enabled")));
+}
+
+#[test]
+fn test_set_feature_flag_non_admin_fails() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let non_admin = Address::generate(&env);
+    client.set_admin(&admins(&env, &admin), &1);
+
+    assert_eq!(
+        client.try_set_feature_flag(&admins(&env, &non_admin), &str(&env, "subscriptions_enabled"), &true),
+        Err(Ok(PaymentError::Unauthorized))
+    );
+    assert!(!client.is_feature_enabled(&str(&env, "subscriptions_enabled")));
+}
+
+#[test]
+fn test_subscriptions_disabled_blocks_create_subscription() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let merchant = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let token = create_token(&env, &admin);
+    client.set_admin(&admins(&env, &admin), &1);
+    client.register_merchant(&merchant, &str(&env, "Store"), &str(&env, "desc"), &str(&env, "c@c.com"), &MerchantCategory::Retail, &None);
+
+    // Flag unset → subscriptions disabled by default.
+    assert_eq!(
+        client.try_create_subscription(&payer, &merchant, &bytes(&env, "SUB_001"), &make_plan(&env, &token)),
+        Err(Ok(PaymentError::FeatureFlagDisabled))
+    );
+}
+
+#[test]
+fn test_subscriptions_enabled_allows_create_subscription() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let merchant = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let token = create_token(&env, &admin);
+    client.set_admin(&admins(&env, &admin), &1);
+    client.register_merchant(&merchant, &str(&env, "Store"), &str(&env, "desc"), &str(&env, "c@c.com"), &MerchantCategory::Retail, &None);
+    client.set_feature_flag(&admins(&env, &admin), &str(&env, "subscriptions_enabled"), &true);
+
+    let sub_id = bytes(&env, "SUB_001");
+    client.create_subscription(&payer, &merchant, &sub_id, &make_plan(&env, &token));
+    assert_eq!(client.get_subscription(&sub_id).payer, payer);
+}
+
+#[test]
+fn test_subscriptions_disabled_blocks_process_subscription_payment() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let merchant = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let token = create_token(&env, &admin);
+    client.set_admin(&admins(&env, &admin), &1);
+    client.register_merchant(&merchant, &str(&env, "Store"), &str(&env, "desc"), &str(&env, "c@c.com"), &MerchantCategory::Retail, &None);
+    client.set_feature_flag(&admins(&env, &admin), &str(&env, "subscriptions_enabled"), &true);
+    mint(&env, &token, &payer, 5000);
+    let sub_id = bytes(&env, "SUB_001");
+    client.create_subscription(&payer, &merchant, &sub_id, &make_plan(&env, &token));
+
+    // Disable the flag after creation — processing must be blocked.
+    client.set_feature_flag(&admins(&env, &admin), &str(&env, "subscriptions_enabled"), &false);
+    assert_eq!(
+        client.try_process_subscription_payment(&payer, &sub_id),
+        Err(Ok(PaymentError::FeatureFlagDisabled))
+    );
+}
+
+#[test]
+fn test_token_allowlist_not_enforced_allows_any_token() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let merchant = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let token = create_token(&env, &admin);
+    client.set_admin(&admins(&env, &admin), &1);
+    client.register_merchant(&merchant, &str(&env, "Store"), &str(&env, "desc"), &str(&env, "c@c.com"), &MerchantCategory::Retail, &None);
+    mint(&env, &token, &payer, 5000);
+
+    // Flag unset → allowlist not enforced; an unlisted token is accepted.
+    assert!(!client.is_feature_enabled(&str(&env, "token_allowlist_enforced")));
+    let order = make_order(&env, &merchant, &payer, &token);
+    let (_pk, sig) = sign_order(&env, &order);
+    client.process_payment_with_signature(&payer, &order, &sig, &zero_key(&env));
+    assert_eq!(
+        client.get_payment_by_id(&payer, &bytes(&env, "ORDER_001")).status,
+        PaymentStatus::Completed
+    );
+}
+
+#[test]
+fn test_token_allowlist_enforced_blocks_unlisted_token() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let merchant = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let token = create_token(&env, &admin);
+    client.set_admin(&admins(&env, &admin), &1);
+    client.register_merchant(&merchant, &str(&env, "Store"), &str(&env, "desc"), &str(&env, "c@c.com"), &MerchantCategory::Retail, &None);
+    mint(&env, &token, &payer, 5000);
+
+    client.set_feature_flag(&admins(&env, &admin), &str(&env, "token_allowlist_enforced"), &true);
+    assert!(client.is_feature_enabled(&str(&env, "token_allowlist_enforced")));
+
+    let order = make_order(&env, &merchant, &payer, &token);
+    let (_pk, sig) = sign_order(&env, &order);
+    assert_eq!(
+        client.try_process_payment_with_signature(&payer, &order, &sig, &zero_key(&env)),
+        Err(Ok(PaymentError::TokenNotAllowed))
+    );
+}
+
+#[test]
+fn test_token_allowlist_enforced_allows_allowlisted_token() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let merchant = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let token = create_token(&env, &admin);
+    client.set_admin(&admins(&env, &admin), &1);
+    client.register_merchant(&merchant, &str(&env, "Store"), &str(&env, "desc"), &str(&env, "c@c.com"), &MerchantCategory::Retail, &None);
+    mint(&env, &token, &payer, 5000);
+
+    client.set_feature_flag(&admins(&env, &admin), &str(&env, "token_allowlist_enforced"), &true);
+    client.add_allowed_token(&admins(&env, &admin), &token);
+
+    let order = make_order(&env, &merchant, &payer, &token);
+    let (_pk, sig) = sign_order(&env, &order);
+    client.process_payment_with_signature(&payer, &order, &sig, &zero_key(&env));
+    assert_eq!(
+        client.get_payment_by_id(&payer, &bytes(&env, "ORDER_001")).status,
+        PaymentStatus::Completed
+    );
+}
+
 // ── Merchant stats tests ──────────────────────────────────────────────────────
 
 #[test]

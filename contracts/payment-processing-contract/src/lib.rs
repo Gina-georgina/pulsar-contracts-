@@ -24,6 +24,8 @@ mod repro_tests;
 mod prop_tests;
 #[cfg(test)]
 mod payer_payment_history_tests;
+#[cfg(test)]
+mod feature_flag_tests;
 
 use alloc::vec::Vec as RustVec;
 use soroban_sdk::{
@@ -433,6 +435,9 @@ impl PaymentContract {
     /// will be rejected with [`PaymentError::TokenNotAllowed`].
     /// When disabled (default), any token contract address is accepted.
     ///
+    /// This is a thin wrapper around the `token_allowlist_enforced` feature
+    /// flag (see [`Self::set_feature_flag`] and `docs/FEATURE_FLAGS.md`).
+    ///
     /// Use `add_allowed_token` to populate the allowlist before enabling it.
     ///
     /// # Errors
@@ -445,11 +450,61 @@ impl PaymentContract {
         storage::bump_instance_ttl(&env);
         helper::require_multi_admin(&env, admins)?;
         storage::set_token_allowlist_enabled(&env, enabled);
+        storage::set_feature_flag(&env, &String::from_str(&env, "token_allowlist_enforced"), enabled);
         env.events().publish(
             (String::from_str(&env, "token_allowlist_mode_set"),),
             enabled,
         );
         Ok(())
+    }
+
+    // ── Feature flags (MISC-034) ──────────────────────────────────────────────
+
+    /// Enable or disable a named feature flag without a contract upgrade.
+    ///
+    /// Feature flags allow staged rollout / A/B testing of contract features.
+    /// Flags are stored under [`DataKey::FeatureFlag`] and default to `false`
+    /// (disabled) when never set. See `docs/FEATURE_FLAGS.md` for the full
+    /// list of flags and their current states.
+    ///
+    /// Currently recognised flags:
+    /// - `subscriptions_enabled` — gates `create_subscription` and
+    ///   `process_subscription_payment`.
+    /// - `token_allowlist_enforced` — gates token allowlist enforcement in
+    ///   payment, batch, multi-sig, and subscription paths.
+    ///
+    /// # Parameters
+    /// - `admins` — Admin addresses satisfying the multi-sig threshold.
+    /// - `name` — The flag name.
+    /// - `enabled` — `true` to enable the flag, `false` to disable it.
+    ///
+    /// # Errors
+    /// - [`PaymentError::Unauthorized`] if the admin multi-sig check fails.
+    ///
+    /// # Events
+    /// Emits `feature_flag_set` with payload `(name, enabled)`.
+    pub fn set_feature_flag(
+        env: Env,
+        admins: Vec<Address>,
+        name: String,
+        enabled: bool,
+    ) -> Result<(), PaymentError> {
+        storage::bump_instance_ttl(&env);
+        helper::require_multi_admin(&env, admins)?;
+        storage::set_feature_flag(&env, &name, enabled);
+        env.events().publish(
+            (String::from_str(&env, "feature_flag_set"),),
+            (name, enabled),
+        );
+        Ok(())
+    }
+
+    /// Return the current state of a named feature flag.
+    ///
+    /// Returns `false` for flags that have never been set.
+    pub fn get_feature_flag(env: Env, name: String) -> bool {
+        storage::bump_instance_ttl(&env);
+        storage::get_feature_flag(&env, &name)
     }
 
     /// Add a token contract address to the admin-managed allowlist.
@@ -722,8 +777,8 @@ impl PaymentContract {
         if order.expires_at > 0 && now > order.expires_at {
             return Err(PaymentError::PaymentExpired);
         }
-        // SEC-009: enforce token allowlist when enabled
-        if storage::is_token_allowlist_enabled(&env)
+        // SEC-009 / MISC-034: enforce token allowlist when the feature flag is on
+        if storage::is_token_allowlist_enforced(&env)
             && !storage::is_token_allowed(&env, &order.token)
         {
             return Err(PaymentError::TokenNotAllowed);
@@ -846,7 +901,7 @@ impl PaymentContract {
         }
 
         let now = env.ledger().timestamp();
-        let allowlist_enabled = storage::is_token_allowlist_enabled(&env);
+        let allowlist_enabled = storage::is_token_allowlist_enforced(&env);
 
         for order in orders.iter() {
             if order.payer != payer {
@@ -1692,8 +1747,8 @@ impl PaymentContract {
         if required_signers.is_empty() || required_signers.len() > storage::MAX_SIGNERS {
             return Err(PaymentError::InvalidInput);
         }
-        // SEC-009: enforce token allowlist when enabled
-        if storage::is_token_allowlist_enabled(&env)
+        // SEC-009 / MISC-034: enforce token allowlist when the feature flag is on
+        if storage::is_token_allowlist_enforced(&env)
             && !storage::is_token_allowed(&env, &order.token)
         {
             return Err(PaymentError::TokenNotAllowed);
@@ -2057,6 +2112,10 @@ impl PaymentContract {
     ) -> Result<(), PaymentError> {
         storage::bump_instance_ttl(&env);
         if storage::is_paused(&env) { return Err(PaymentError::ContractPaused); }
+        // MISC-034: gate subscriptions behind the `subscriptions_enabled` flag.
+        if !storage::get_feature_flag(&env, &String::from_str(&env, "subscriptions_enabled")) {
+            return Err(PaymentError::FeatureFlagDisabled);
+        }
         payer.require_auth();
         if plan.interval == 0 {
             return Err(PaymentError::InvalidInput);
@@ -2147,6 +2206,10 @@ impl PaymentContract {
     ) -> Result<(), PaymentError> {
         storage::bump_instance_ttl(&env);
         if storage::is_paused(&env) { return Err(PaymentError::ContractPaused); }
+        // MISC-034: gate subscription charging behind the `subscriptions_enabled` flag.
+        if !storage::get_feature_flag(&env, &String::from_str(&env, "subscriptions_enabled")) {
+            return Err(PaymentError::FeatureFlagDisabled);
+        }
         caller.require_auth();
         let mut sub = storage::get_subscription(&env, &subscription_id)
             .ok_or(PaymentError::SubscriptionNotFound)?;
@@ -2163,8 +2226,8 @@ impl PaymentContract {
         if sub.last_charged_at > 0 && now < sub.last_charged_at + sub.plan.interval {
             return Err(PaymentError::SubscriptionIntervalNotElapsed);
         }
-        // SEC-009: enforce token allowlist when enabled
-        if storage::is_token_allowlist_enabled(&env)
+        // SEC-009 / MISC-034: enforce token allowlist when the feature flag is on
+        if storage::is_token_allowlist_enforced(&env)
             && !storage::is_token_allowed(&env, &sub.plan.token)
         {
             return Err(PaymentError::TokenNotAllowed);

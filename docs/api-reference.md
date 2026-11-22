@@ -15,6 +15,7 @@ A machine-readable ABI is available at [`docs/contract-abi.json`](./contract-abi
   - [Admin](#admin)
   - [Merchant Management](#merchant-management)
   - [Payment Processing](#payment-processing)
+  - [Batch Payment Initiation](#batch-payment-initiation)
   - [Payment Queries](#payment-queries)
   - [Refunds](#refunds)
   - [Multi-Signature Payments](#multi-signature-payments)
@@ -300,6 +301,116 @@ verifying that `signature` is a valid ed25519 signature of the serialised
 > **Idempotency**: `PaymentAlreadyExists` means the same `order_id` was already
 > processed. Off-chain clients should treat this as a success on retry. See
 > [IDEMPOTENCY_GUIDE.md](./IDEMPOTENCY_GUIDE.md).
+
+---
+
+### Batch Payment Initiation
+
+#### `POST /api/payments/batch`
+
+Submits multiple payment orders in a single HTTP request. Each order is
+submitted as its own Soroban transaction (one `process_payment_with_signature`
+invocation per order), so a failure in one order does not roll back the others.
+All results are returned together in a single response.
+
+**Batch size limit**: a maximum of **50** orders per request. Requests with more
+than 50 orders are rejected with HTTP `400` and error code `InvalidInput`; no
+orders are submitted.
+
+**Request body**
+
+| Field    | Type             | Description |
+|---|---|---|
+| `orders` | `BatchPaymentItem[]` | 1–50 payment orders to submit |
+
+Each `BatchPaymentItem`:
+
+| Field                 | Type           | Description |
+|---|---|---|
+| `payer`               | `Address`      | Source payer |
+| `order`               | `PaymentOrder` | Order to process (see [`PaymentOrder`](#paymentorder-struct)) |
+| `signature`           | `BytesN<64>`   | ed25519 signature over the serialised `order` |
+| `merchant_public_key` | `BytesN<32>`   | Merchant public key used to verify `signature` |
+
+```json
+{
+  "orders": [
+    {
+      "payer": "G...",
+      "order": {
+        "order_id": "ORDER-001",
+        "merchant_address": "G...",
+        "payer": "G...",
+        "token": "C...",
+        "amount": "1000",
+        "description": "Coffee purchase",
+        "expires_at": 0
+      },
+      "signature": "…64 bytes…",
+      "merchant_public_key": "…32 bytes…"
+    }
+  ]
+}
+```
+
+**Response body**
+
+| Field     | Type                 | Description |
+|---|---|---|
+| `results` | `BatchPaymentResult[]` | One entry per submitted order, in request order |
+| `succeeded` | `u32`              | Number of orders that succeeded |
+| `failed`  | `u32`                | Number of orders that failed |
+
+Each `BatchPaymentResult`:
+
+| Field      | Type             | Description |
+|---|---|---|
+| `index`    | `u32`            | Position of the order in the request (0-based) |
+| `order_id` | `Bytes`          | `order_id` from the submitted order |
+| `success`  | `bool`           | `true` if the payment was processed |
+| `tx_hash`  | `Option<String>` | Soroban transaction hash on success, `null` on failure |
+| `error`    | `Option<String>` | Error name (see [Error Codes](#error-codes)) on failure, `null` on success |
+
+> **Idempotency**: an order that fails with `PaymentAlreadyExists` is reported
+> as a failure in `results` with `error: "PaymentAlreadyExists"`. Clients should
+> treat that specific error as a success on retry, exactly as with the single
+> payment endpoint.
+
+**Example — all orders succeed** (`200 OK`)
+
+```json
+{
+  "results": [
+    { "index": 0, "order_id": "ORDER-001", "success": true, "tx_hash": "abc…", "error": null },
+    { "index": 1, "order_id": "ORDER-002", "success": true, "tx_hash": "def…", "error": null }
+  ],
+  "succeeded": 2,
+  "failed": 0
+}
+```
+
+**Example — mixed success/failure** (`200 OK`)
+
+```json
+{
+  "results": [
+    { "index": 0, "order_id": "ORDER-001", "success": true,  "tx_hash": "abc…", "error": null },
+    { "index": 1, "order_id": "ORDER-002", "success": false, "tx_hash": null,   "error": "MerchantInactive" },
+    { "index": 2, "order_id": "ORDER-003", "success": false, "tx_hash": null,   "error": "InvalidSignature" }
+  ],
+  "succeeded": 1,
+  "failed": 2
+}
+```
+
+**Example — over the batch limit** (`400 Bad Request`)
+
+```json
+{
+  "error": "InvalidInput",
+  "message": "Batch size exceeds maximum of 50 orders"
+}
+```
 
 ---
 
@@ -622,3 +733,18 @@ console.log(result.alreadyExisted ? 'Duplicate (safe)' : 'New payment');
 For full SDK documentation see [`sdk/README.md`](../sdk/README.md).
 
 For idempotency guidance see [`docs/IDEMPOTENCY_GUIDE.md`](./IDEMPOTENCY_GUIDE.md).
+
+### Batch payments
+
+```typescript
+// Submit up to 50 orders in one request; inspect per-order results.
+const batch = await apiClient.processPaymentBatch({
+  orders: items, // BatchPaymentItem[]
+});
+
+for (const result of batch.results) {
+  if (!result.success) {
+    console.error(result.order_id, result.error);
+  }
+}
+```

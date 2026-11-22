@@ -41,10 +41,85 @@ function cacheKeyFor(req: Request): string {
   return `${req.path}?${sorted}`;
 }
 
-export function createAnalyticsRouter(databaseUrl: string): express.Router {
+/**
+ * Tracks in-flight analytics requests so the service entry point can drain
+ * them during a graceful shutdown.
+ */
+export interface InFlightTracker {
+  /** Number of requests currently being processed. */
+  readonly count: number;
+  /** Marks the service as shutting down; new requests are rejected with 503. */
+  beginShutdown(): void;
+  /** Resolves once all in-flight requests have finished (or the timeout elapses). */
+  drain(timeoutMs: number): Promise<void>;
+}
+
+export function createInFlightTracker(): InFlightTracker {
+  let inFlight = 0;
+  let shuttingDown = false;
+  let waiters: Array<() => void> = [];
+
+  const notifyIfDrained = () => {
+    if (inFlight === 0) {
+      const pending = waiters;
+      waiters = [];
+      pending.forEach((resolve) => resolve());
+    }
+  };
+
+  return {
+    get count() {
+      return inFlight;
+    },
+    beginShutdown() {
+      shuttingDown = true;
+    },
+    drain(timeoutMs: number) {
+      if (inFlight === 0) return Promise.resolve();
+      return new Promise<void>((resolve) => {
+        const timer = setTimeout(() => {
+          waiters = waiters.filter((w) => w !== onDrained);
+          resolve();
+        }, timeoutMs);
+        if (typeof timer.unref === "function") timer.unref();
+        const onDrained = () => {
+          clearTimeout(timer);
+          resolve();
+        };
+        waiters.push(onDrained);
+      });
+    },
+  };
+}
+
+/**
+ * Express middleware that rejects new requests with 503 once shutdown has
+ * begun and otherwise tracks the request until the response finishes.
+ */
+export function shutdownAwareMiddleware(
+  tracker: InFlightTracker
+): express.RequestHandler {
+  return (req, res, next) => {
+    if (tracker.count === 0 && isShuttingDown(tracker)) {
+      res.status(503).json({ error: "Service is shutting down" });
+      return;
+    }
+    tracker.track();
+    res.on("finish", () => tracker.release());
+    res.on("close", () => tracker.release());
+    next();
+  };
+}
+
+export function createAnalyticsRouter(
+  databaseUrl: string,
+  tracker: InFlightTracker = createInFlightTracker()
+): express.Router {
   const router = express.Router();
   const db = new Pool({ connectionString: databaseUrl });
   const cache = new AnalyticsCache(cacheTtlFromEnv());
+
+  router.use(shutdownAwareMiddleware(tracker));
 
   router.get("/analytics/summary", async (req, res) => {
     try {

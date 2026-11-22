@@ -7,6 +7,16 @@ const CONTRACT_ID = process.env.CONTRACT_ID ?? "";
 const pool = new Pool({ connectionString: DATABASE_URL });
 const DEFAULT_TIMEOUT_MS = 3000;
 
+let shuttingDown = false;
+
+export function setShuttingDown(value: boolean): void {
+  shuttingDown = value;
+}
+
+export function getShutdownStatus(): boolean {
+  return shuttingDown;
+}
+
 export type ComponentStatus = {
   status: "ok" | "down";
   durationMs?: number;
@@ -79,12 +89,26 @@ function downStatus(error: string): ComponentStatus {
   return { status: "down", error };
 }
 
-export async function checkDependencies(contractId = CONTRACT_ID, rpcUrl = RPC_URL): Promise<{ database: ComponentStatus; rpc: ComponentStatus; contract: ComponentStatus }> {
+export function checkShutdown(): ComponentStatus {
+  if (shuttingDown) {
+    return { status: "down", error: "shutting_down" };
+  }
+  return { status: "ok" };
+}
+
+export async function checkDependencies(contractId = CONTRACT_ID, rpcUrl = RPC_URL): Promise<{ database: ComponentStatus; rpc: ComponentStatus; contract: ComponentStatus; shutdown: ComponentStatus }> {
+  const shutdown = checkShutdown();
+
+  if (shuttingDown) {
+    const down = downStatus("shutting_down");
+    return { database: down, rpc: down, contract: down, shutdown };
+  }
+
   const [database, rpcHealth, contract] = await Promise.all([
     checkDatabase().catch((err) => downStatus(err instanceof Error ? err.message : String(err))),
     checkRpcHealth(rpcUrl).catch((err) => downStatus(err instanceof Error ? err.message : String(err))),
     checkContractHealth(contractId, rpcUrl).catch((err) => downStatus(err instanceof Error ? err.message : String(err))),
   ]);
 
-  return { database, rpc: rpcHealth, contract };
+  return { database, rpc: rpcHealth, contract, shutdown };
 }
