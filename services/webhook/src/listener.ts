@@ -13,17 +13,21 @@ const WATCHED_EVENTS = new Set([
   "multisig_executed",
 ]);
 
+export interface ListenerHandle {
+  stop(): void;
+}
+
 export async function startListener(
   rpcUrl: string,
   contractId: string,
   pollIntervalMs = 5_000
-): Promise<void> {
+): Promise<ListenerHandle> {
   const server = new rpc.Server(rpcUrl);
   let latestLedger = 0;
 
   console.log(`[listener] Watching contract ${contractId} on ${rpcUrl}`);
 
-  setInterval(async () => {
+  const timer = setInterval(async () => {
     try {
       const info = await server.getLatestLedger();
       if (info.sequence <= latestLedger) return;
@@ -74,6 +78,12 @@ export async function startListener(
       console.error("[listener] Poll error:", err);
     }
   }, pollIntervalMs);
+
+  return {
+    stop() {
+      clearInterval(timer);
+    },
+  };
 }
 
 function extractMerchant(ev: rpc.Api.EventResponse): string | null {

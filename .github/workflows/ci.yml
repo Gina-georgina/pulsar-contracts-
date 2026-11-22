@@ -19,6 +19,9 @@ env:
   # Note: `cargo fmt` and `cargo audit` do not accept --locked; fmt operates
   # on source files only and audit reads the lock file directly.
   CARGO_INCREMENTAL: 0
+  # T-027: Minimum line coverage (percent) enforced by the `coverage` job.
+  # Adjust this value to change the threshold without editing workflow logic.
+  COVERAGE_THRESHOLD: 80
 
 jobs:
   test:
@@ -283,23 +286,30 @@ jobs:
           path: contracts/payment-processing-contract/lcov.info
           retention-days: 30
 
-      - name: Check minimum line coverage (80% — warning only)
+      - name: Check minimum line coverage (enforced)
         run: |
+          THRESHOLD="${COVERAGE_THRESHOLD:-80}"
           COVERAGE=$(cargo llvm-cov --all-features --locked --summary-only 2>&1 \
             | grep -E '^TOTAL' | awk '{print $10}' | tr -d '%')
-          echo "Line coverage: ${COVERAGE}%"
+          echo "Line coverage: ${COVERAGE}% (threshold: ${THRESHOLD}%)"
           # Write coverage summary to GitHub Step Summary
           echo "## Coverage Report" >> "$GITHUB_STEP_SUMMARY"
           echo "| Metric | Value |" >> "$GITHUB_STEP_SUMMARY"
           echo "|--------|-------|" >> "$GITHUB_STEP_SUMMARY"
           echo "| Line Coverage | ${COVERAGE}% |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Threshold | 80% (warning only) |" >> "$GITHUB_STEP_SUMMARY"
-          if [ -n "$COVERAGE" ] && [ "$(echo "$COVERAGE < 80" | bc -l)" = "1" ]; then
-            echo "| Status | ⚠️ Below threshold |" >> "$GITHUB_STEP_SUMMARY"
-            echo "::warning::Line coverage ${COVERAGE}% is below the 80% threshold. Please add tests."
+          echo "| Threshold | ${THRESHOLD}% (enforced) |" >> "$GITHUB_STEP_SUMMARY"
+          if [ -z "$COVERAGE" ]; then
+            echo "| Status | ❌ Could not determine coverage |" >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::Could not determine line coverage from cargo llvm-cov output."
+            exit 1
+          fi
+          if [ "$(echo "$COVERAGE < $THRESHOLD" | bc -l)" = "1" ]; then
+            echo "| Status | ❌ Below threshold |" >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::Line coverage ${COVERAGE}% is below the ${THRESHOLD}% threshold. Please add tests."
+            exit 1
           else
             echo "| Status | ✅ Threshold met |" >> "$GITHUB_STEP_SUMMARY"
-            echo "Coverage threshold met: ${COVERAGE}%"
+            echo "Coverage threshold met: ${COVERAGE}% >= ${THRESHOLD}%"
           fi
         working-directory: contracts/payment-processing-contract
 
