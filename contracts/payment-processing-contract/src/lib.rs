@@ -31,11 +31,10 @@ use soroban_sdk::{
 };
 
 use error::PaymentError;
-use storage::{REFUND_GRACE_BUFFER, REFUND_WINDOW};
 use types::{
     DataKey, GlobalStats, Merchant, MerchantCategory, MerchantStats, MultisigPayment,
     PaymentFilter, PaymentOrder, PaymentPage, PaymentReceipt, PaymentRecord, PaymentStatus,
-    RefundRecord, RefundStatus, SortField, SortOrder,
+    RefundPage, RefundRecord, RefundStatus, SortField, SortOrder,
 };
 
 #[contract]
@@ -182,6 +181,56 @@ impl PaymentContract {
     pub fn get_version(env: Env) -> u32 {
         storage::bump_instance_ttl(&env);
         storage::get_contract_version(&env)
+    }
+
+    /// Set the refund window and grace buffer used by `initiate_refund`. Admin only.
+    ///
+    /// Replaces the previously hardcoded `REFUND_WINDOW` / `REFUND_GRACE_BUFFER`
+    /// compile-time constants (SC-055). Values are stored in instance storage and
+    /// default to the original constants until this function is first called.
+    ///
+    /// # Parameters
+    /// - `admin` — Admin address; must be authenticated and satisfy the admin check.
+    /// - `window_secs` — Refund window in seconds. Must be within
+    ///   [`storage::MIN_REFUND_WINDOW`]..=[`storage::MAX_REFUND_WINDOW`].
+    /// - `grace_buffer_secs` — Grace buffer in seconds. Must be within
+    ///   [`storage::MIN_REFUND_GRACE_BUFFER`]..=[`storage::MAX_REFUND_GRACE_BUFFER`].
+    ///
+    /// # Errors
+    /// - [`PaymentError::Unauthorized`] if `admin` is not an admin.
+    /// - [`PaymentError::InvalidInput`] if either value is out of bounds.
+    pub fn set_refund_window(
+        env: Env,
+        admin: Address,
+        window_secs: u64,
+        grace_buffer_secs: u64,
+    ) -> Result<(), PaymentError> {
+        storage::bump_instance_ttl(&env);
+        helper::require_admin(&env, &admin)?;
+        if window_secs < storage::MIN_REFUND_WINDOW || window_secs > storage::MAX_REFUND_WINDOW {
+            return Err(PaymentError::InvalidInput);
+        }
+        if grace_buffer_secs < storage::MIN_REFUND_GRACE_BUFFER
+            || grace_buffer_secs > storage::MAX_REFUND_GRACE_BUFFER
+        {
+            return Err(PaymentError::InvalidInput);
+        }
+        storage::set_refund_window(&env, window_secs);
+        storage::set_refund_grace_buffer(&env, grace_buffer_secs);
+        env.events().publish(
+            (String::from_str(&env, "refund_window_set"),),
+            (window_secs, grace_buffer_secs),
+        );
+        Ok(())
+    }
+
+    /// Return the currently configured refund window and grace buffer, in seconds.
+    pub fn get_refund_window(env: Env) -> (u64, u64) {
+        storage::bump_instance_ttl(&env);
+        (
+            storage::get_refund_window(&env),
+            storage::get_refund_grace_buffer(&env),
+        )
     }
 
     /// Health check endpoint for monitoring systems (BE-007).
@@ -1120,6 +1169,77 @@ impl PaymentContract {
         Ok(stats)
     }
 
+    /// Return a paginated list of all completed refunds (SC-052).
+    ///
+    /// Replaces the unbounded `get_all_refunds` scan with a cursor-based page
+    /// query mirroring `get_merchant_payment_history`. The refund index is
+    /// stored as an ordered list of refund IDs; this function reads at most
+    /// `limit` (capped at 100) records starting immediately after `cursor`.
+    ///
+    /// # Parameters
+    /// - `cursor` — Optional refund ID to resume pagination from. Omit for the
+    ///   first page.
+    /// - `limit` — Maximum number of records to return (capped at 100).
+    ///
+    /// # Returns
+    /// A [`RefundPage`] containing the matching records, a next-page cursor,
+    /// and the total count of indexed refunds.
+    pub fn get_refund_page(
+        env: Env,
+        cursor: Option<Bytes>,
+        limit: u32,
+    ) -> Result<RefundPage, PaymentError> {
+        storage::bump_instance_ttl(&env);
+        let cap = limit.min(100) as usize;
+        let total = storage::get_all_refund_count(&env);
+        let ids = storage::get_all_refund_ids(&env);
+        // Locate the cursor position within the ordered index.
+        let start = if let Some(ref cur) = cursor {
+            ids.iter()
+                .position(|id| &id == cur)
+                .map(|p| p + 1)
+                .unwrap_or(ids.len() as usize)
+        } else {
+            0
+        };
+        let mut page: Vec<RefundRecord> = Vec::new(&env);
+        let mut last_id: Option<Bytes> = None;
+        let mut idx = start;
+        let mut collected = 0usize;
+        while idx < ids.len() as usize && collected < cap {
+            let id = ids.get(idx as u32).unwrap();
+            if let Some(record) = storage::get_refund(&env, &id) {
+                page.push_back(record);
+                last_id = Some(id);
+                collected += 1;
+            }
+            idx += 1;
+        }
+        let next_cursor = if idx < ids.len() as usize {
+            last_id
+        } else {
+            None
+        };
+        Ok(RefundPage {
+            records: page,
+            next_cursor,
+            total,
+        })
+    }
+
+    /// **Deprecated (SC-052):** use [`Self::get_refund_page`] instead.
+    ///
+    /// Previously returned the entire refund list in a single call, which is
+    /// unbounded and will eventually exceed Soroban's memory and CPU budget.
+    /// This shim now returns a single bounded page (max 100 records) so that
+    /// existing callers keep working during the migration window; it will be
+    /// removed in a future release. See `docs/adr/0007-refund-pagination.md`.
+    #[deprecated(note = "use get_refund_page for cursor-based pagination")]
+    pub fn get_all_refunds(env: Env) -> Result<Vec<RefundRecord>, PaymentError> {
+        let page = Self::get_refund_page(env, None, 100)?;
+        Ok(page.records)
+    }
+
     /// Return payment and refund statistics for a single merchant.
     ///
     /// The merchant may query their own stats. An admin may query any merchant.
@@ -1406,13 +1526,17 @@ impl PaymentContract {
             return Err(PaymentError::Unauthorized);
         }
         let now = env.ledger().timestamp();
-        // Deadline = paid_at + 30-day window + 1-hour grace buffer.
+        // Deadline = paid_at + refund window + grace buffer.
         // The grace buffer absorbs minor ledger timestamp drift near the boundary
         // so that legitimate refunds submitted just before the deadline are not
         // rejected due to a few seconds of validator clock variance.
-        // See storage::REFUND_WINDOW and storage::REFUND_GRACE_BUFFER for the
-        // full trust-model rationale.
-        if now > record.paid_at + REFUND_WINDOW + REFUND_GRACE_BUFFER {
+        // The window and grace buffer are read from instance storage (SC-055) and
+        // default to the original compile-time constants until an admin calls
+        // `set_refund_window`. See storage::DEFAULT_REFUND_WINDOW and
+        // storage::DEFAULT_REFUND_GRACE_BUFFER for the full trust-model rationale.
+        let window = storage::get_refund_window(&env);
+        let grace_buffer = storage::get_refund_grace_buffer(&env);
+        if now > record.paid_at + window + grace_buffer {
             return Err(PaymentError::RefundWindowExpired);
         }
         let new_total = record.refunded_amount + record.pending_refund_amount + amount;
@@ -1599,6 +1723,7 @@ impl PaymentContract {
         refund.status = RefundStatus::Completed;
         storage::save_refund(&env, &refund);
         storage::push_all_refund_id(&env, &refund_id);
+        storage::increment_all_refund_count(&env);
         storage::decrement_order_refund_count(&env, &refund.order_id);
         storage::increment_refund_stats(&env, refund.amount)?;
 
@@ -1939,6 +2064,7 @@ impl PaymentContract {
             refund.status = RefundStatus::Completed;
             storage::save_refund(&env, &refund);
             storage::push_all_refund_id(&env, &refund_id);
+            storage::increment_all_refund_count(&env);
             storage::increment_refund_stats(&env, refund.amount)?;
 
             let token_client = token::Client::new(&env, &record.token);

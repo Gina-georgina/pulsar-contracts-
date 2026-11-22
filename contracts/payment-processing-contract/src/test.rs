@@ -859,7 +859,8 @@ fn test_refund_exceeds_payment_fails() {
 fn test_refund_window_expired_fails() {
     let (env, client) = setup();
     let (_admin, _merchant, payer, _token) = setup_paid_order(&env, &client);
-    env.ledger().with_mut(|l| l.timestamp = 2_592_001);
+    // Default window (30 days) + grace buffer (1 hour) = 2_595_600; one second past.
+    env.ledger().with_mut(|l| l.timestamp = 2_595_601);
     assert_eq!(
         client.try_initiate_refund(&payer, &bytes(&env, "REFUND_001"), &bytes(&env, "ORDER_001"), &500, &str(&env, "Late")),
         Err(Ok(PaymentError::RefundWindowExpired))
@@ -926,6 +927,157 @@ fn test_refund_within_grace_buffer_succeeds() {
     );
     let status = client.get_refund_status(&bytes(&env, "REFUND_GRACE"));
     assert_eq!(status, RefundStatus::Pending);
+}
+
+// ── SC-055: configurable refund window / grace buffer ────────────────────────
+
+/// Defaults must match the previously hardcoded constants (30 days + 1 hour).
+#[test]
+fn test_refund_window_defaults() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    client.set_admin(&admins(&env, &admin), &1);
+    let (window, grace) = client.get_refund_window();
+    assert_eq!(window, 2_592_000);
+    assert_eq!(grace, 3_600);
+}
+
+/// A custom window set by the admin must be honoured by initiate_refund.
+#[test]
+fn test_custom_refund_window_accepted_within_window() {
+    let (env, client) = setup();
+    let (admin, _merchant, payer, _token) = setup_paid_order(&env, &client);
+
+    // 7-day window with a 10-minute grace buffer.
+    client.set_refund_window(&admins(&env, &admin), &604_800, &600);
+    let (window, grace) = client.get_refund_window();
+    assert_eq!(window, 604_800);
+    assert_eq!(grace, 600);
+
+    // Day 6 is inside the custom window.
+    env.ledger().with_mut(|l| l.timestamp = 518_400);
+    client.initiate_refund(
+        &payer,
+        &bytes(&env, "REFUND_CUSTOM_OK"),
+        &bytes(&env, "ORDER_001"),
+        &500,
+        &str(&env, "inside custom window"),
+    );
+    assert_eq!(
+        client.get_refund_status(&bytes(&env, "REFUND_CUSTOM_OK")),
+        RefundStatus::Pending
+    );
+}
+
+/// A custom window must also reject refunds that fall outside it.
+#[test]
+fn test_custom_refund_window_rejected_outside_window() {
+    let (env, client) = setup();
+    let (admin, _merchant, payer, _token) = setup_paid_order(&env, &client);
+
+    client.set_refund_window(&admins(&env, &admin), &604_800, &600);
+
+    // Day 8 is past the 7-day window + grace buffer.
+    env.ledger().with_mut(|l| l.timestamp = 691_200);
+    assert_eq!(
+        client.try_initiate_refund(
+            &payer,
+            &bytes(&env, "REFUND_CUSTOM_LATE"),
+            &bytes(&env, "ORDER_001"),
+            &500,
+            &str(&env, "outside custom window"),
+        ),
+        Err(Ok(PaymentError::RefundWindowExpired))
+    );
+}
+
+/// The custom grace buffer boundary must be respected exactly.
+#[test]
+fn test_custom_refund_grace_buffer_boundary() {
+    let (env, client) = setup();
+    let (admin, _merchant, payer, _token) = setup_paid_order(&env, &client);
+
+    // 1-day window, 1-hour grace buffer.
+    client.set_refund_window(&admins(&env, &admin), &86_400, &3_600);
+
+    // Exactly at the end of the grace buffer — accepted.
+    env.ledger().with_mut(|l| l.timestamp = 90_000);
+    client.initiate_refund(
+        &payer,
+        &bytes(&env, "REFUND_CUSTOM_BOUNDARY"),
+        &bytes(&env, "ORDER_001"),
+        &500,
+        &str(&env, "at custom boundary"),
+    );
+    assert_eq!(
+        client.get_refund_status(&bytes(&env, "REFUND_CUSTOM_BOUNDARY")),
+        RefundStatus::Pending
+    );
+
+    // One second later — rejected.
+    env.ledger().with_mut(|l| l.timestamp = 90_001);
+    assert_eq!(
+        client.try_initiate_refund(
+            &payer,
+            &bytes(&env, "REFUND_CUSTOM_PAST"),
+            &bytes(&env, "ORDER_001"),
+            &500,
+            &str(&env, "past custom boundary"),
+        ),
+        Err(Ok(PaymentError::RefundWindowExpired))
+    );
+}
+
+/// set_refund_window must be admin-only.
+#[test]
+fn test_set_refund_window_non_admin_fails() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let non_admin = Address::generate(&env);
+    client.set_admin(&admins(&env, &admin), &1);
+    assert_eq!(
+        client.try_set_refund_window(&admins(&env, &non_admin), &604_800, &600),
+        Err(Ok(PaymentError::Unauthorized))
+    );
+}
+
+/// Bounds validation: zero window, zero grace buffer and out-of-range values
+/// must all be rejected with InvalidInput.
+#[test]
+fn test_set_refund_window_bounds_validation() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    client.set_admin(&admins(&env, &admin), &1);
+
+    // Zero window is invalid.
+    assert_eq!(
+        client.try_set_refund_window(&admins(&env, &admin), &0, &600),
+        Err(Ok(PaymentError::InvalidInput))
+    );
+
+    // Negative window is invalid.
+    assert_eq!(
+        client.try_set_refund_window(&admins(&env, &admin), &-1, &600),
+        Err(Ok(PaymentError::InvalidInput))
+    );
+
+    // Negative grace buffer is invalid.
+    assert_eq!(
+        client.try_set_refund_window(&admins(&env, &admin), &604_800, &-1),
+        Err(Ok(PaymentError::InvalidInput))
+    );
+
+    // Window beyond the maximum allowed is invalid.
+    assert_eq!(
+        client.try_set_refund_window(&admins(&env, &admin), &(i64::MAX), &600),
+        Err(Ok(PaymentError::InvalidInput))
+    );
+
+    // A valid configuration still succeeds after the rejected attempts.
+    client.set_refund_window(&admins(&env, &admin), &604_800, &600);
+    let (window, grace) = client.get_refund_window();
+    assert_eq!(window, 604_800);
+    assert_eq!(grace, 600);
 }
 
 /// Refund exactly at the end of the grace buffer (paid_at + REFUND_WINDOW + REFUND_GRACE_BUFFER) — must succeed.
@@ -1032,6 +1184,85 @@ fn test_concurrent_refunds_exceeding_limit_second_rejected() {
         client.try_initiate_refund(&payer, &bytes(&env, "R_RACE_2"), &bytes(&env, "ORDER_001"), &400, &str(&env, "second")),
         Err(Ok(PaymentError::RefundAmountExceedsPayment))
     );
+}
+
+// ── SC-052: refund pagination tests ──────────────────────────────────────────
+
+/// Helper: create `n` pending refunds against ORDER_001 (1 unit each).
+fn setup_refunds(env: &Env, client: &PaymentContractClient, n: u32) -> Address {
+    let (_admin, _merchant, payer, _token) = setup_paid_order(env, client);
+    for i in 0..n {
+        let refund_id = alloc::format!("RF_{:03}", i);
+        client.initiate_refund(
+            &payer,
+            &Bytes::from_slice(env, refund_id.as_bytes()),
+            &bytes(env, "ORDER_001"),
+            &1,
+            &str(env, "reason"),
+        );
+    }
+    payer
+}
+
+#[test]
+fn test_get_refund_page_empty() {
+    let (env, client) = setup();
+    let page = client.get_refund_page(&None, &10);
+    assert_eq!(page.total, 0);
+    assert_eq!(page.records.len(), 0);
+    assert!(page.next_cursor.is_none());
+}
+
+#[test]
+fn test_get_refund_page_bounded() {
+    let (env, client) = setup();
+    setup_refunds(&env, &client, 5);
+    let page = client.get_refund_page(&None, &2);
+    assert_eq!(page.total, 5);
+    assert_eq!(page.records.len(), 2);
+    assert!(page.next_cursor.is_some());
+}
+
+#[test]
+fn test_get_refund_page_cursor_advances() {
+    let (env, client) = setup();
+    setup_refunds(&env, &client, 5);
+
+    let page1 = client.get_refund_page(&None, &2);
+    assert_eq!(page1.records.len(), 2);
+    let cursor1 = page1.next_cursor.clone().unwrap();
+
+    let page2 = client.get_refund_page(&Some(cursor1), &2);
+    assert_eq!(page2.records.len(), 2);
+    // Pages must not overlap.
+    assert_ne!(page1.records.get(0).unwrap().refund_id, page2.records.get(0).unwrap().refund_id);
+    let cursor2 = page2.next_cursor.clone().unwrap();
+
+    let page3 = client.get_refund_page(&Some(cursor2), &2);
+    assert_eq!(page3.records.len(), 1);
+    // Last page must not advertise a further cursor.
+    assert!(page3.next_cursor.is_none());
+}
+
+#[test]
+fn test_get_refund_page_last_page_has_no_cursor() {
+    let (env, client) = setup();
+    setup_refunds(&env, &client, 3);
+    let page = client.get_refund_page(&None, &10);
+    assert_eq!(page.records.len(), 3);
+    assert!(page.next_cursor.is_none());
+}
+
+#[test]
+fn test_get_refund_page_exact_page_boundary() {
+    let (env, client) = setup();
+    setup_refunds(&env, &client, 4);
+    let page1 = client.get_refund_page(&None, &2);
+    assert_eq!(page1.records.len(), 2);
+    let page2 = client.get_refund_page(&page1.next_cursor, &2);
+    assert_eq!(page2.records.len(), 2);
+    // Exactly two full pages — no trailing empty page.
+    assert!(page2.next_cursor.is_none());
 }
 
 // ── Payment history tests ─────────────────────────────────────────────────────

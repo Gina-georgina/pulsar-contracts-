@@ -69,4 +69,10 @@ pub enum PaymentError {
     /// Enable the allowlist with `set_token_allowlist_mode` and add approved
     /// tokens with `add_allowed_token` before processing payments.
     TokenNotAllowed = 71,
+
+    // Refund window configuration (SC-055)
+    /// The supplied refund window or grace buffer is outside the allowed
+    /// bounds (e.g. zero window, or grace buffer exceeding the window).
+    /// See `set_refund_window` for the enforced limits.
+    InvalidRefundWindow = 72,
 }

@@ -21,6 +21,16 @@
 - [ ] If this adds a new public function, the ABI change is intentional and
       documented.
 
+## Smart Contract Checklist
+
+<!-- Complete this section only if this PR modifies smart contract code. -->
+
+- [ ] Snapshot tests updated.
+- [ ] ABI reference updated.
+- [ ] SDK errors regenerated.
+- [ ] CHANGELOG.md updated.
+- [ ] ADR written if a design decision is involved.
+
 ## Related Issues
 
 <!-- e.g. Closes #123 -->

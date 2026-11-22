@@ -36,6 +36,7 @@ Versions follow **MAJOR.MINOR.PATCH** semantics:
 - `sdk/.npmignore`: excludes source and test files from the published package.
 - `sdk/README.md`: comprehensive README with installation, quick start, full API docs, and links to the idempotency guide and contract API reference.
 - `README.md`: added SDK & Integrator Resources table linking to the SDK, API reference, ABI, and idempotency guide.
+- `set_refund_window(env, window_secs, grace_buffer_secs)` admin function to configure the refund window and grace buffer at runtime, with bounds validation. Defaults to the previous hardcoded values (30-day window, 1-hour grace buffer) when unset, so existing deployments need no migration call.
 
 ### Changed
 - Remove unused `StorageError` (code 51) variant from the payment contract ABI and SDK (`error.rs`, `sdk/errors.ts`, `sdk/error-registry.json`). The variant was never returned by any code path; removing it reduces ABI noise for integrators. Closes #9.
@@ -43,6 +44,11 @@ Versions follow **MAJOR.MINOR.PATCH** semantics:
 - Add best-effort zero/burn admin address validation and test coverage for invalid admin assignment.
 - Add date-filter coverage for `get_global_payment_stats` to cover all-payments and no-payments ranges.
 - Add `InsufficientBalance` (code 25) to `PaymentError` enum and pre-check payer/merchant token balances before transfers in `process_payment_with_signature` and `execute_refund`, returning a typed error instead of a host trap. Closes #10.
+- Replace the unbounded `DataKey::AllRefunds` list with cursor-based pagination via the new `get_refund_page` function (max 100 results per page), matching the payment history pattern. `get_all_refunds` is deprecated and will be removed in a future major release; callers should migrate to `get_refund_page`. See `docs/adr/` for the pagination ADR. Closes #356.
+- `REFUND_WINDOW` and `REFUND_GRACE_BUFFER` are no longer compile-time constants; they are read from contract instance storage and can be adjusted without redeployment via `set_refund_window`. Closes #364.
+
+### Fixed
+- Monitoring service alert webhook now retries failed POSTs up to 3 times at 5-second intervals, logging each attempt and a final error if all retries are exhausted, so dropped alerts are visible in logs. Closes #365.
 
 ---
 

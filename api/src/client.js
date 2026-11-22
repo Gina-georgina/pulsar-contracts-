@@ -80,6 +80,27 @@ export function createApiClient({ baseUrl = DEFAULT_BASE_URL } = {}) {
       ).toString();
       return apiFetch(`/api/payments${qs ? `?${qs}` : ""}`, { ...opts, signal });
     },
+
+    // ── Refunds ──────────────────────────────────────────────────────────────
+
+    /**
+     * Paginated refund listing. Accepts `{ cursor, limit }` (and any other
+     * filter params); null/undefined values are omitted from the query string.
+     */
+    listRefunds(params = {}, { signal } = {}) {
+      const qs = new URLSearchParams(
+        Object.entries(params).filter(([, v]) => v != null)
+      ).toString();
+      return apiFetch(`/api/refunds${qs ? `?${qs}` : ""}`, { ...opts, signal });
+    },
+
+    /**
+     * @deprecated The full refund list is no longer served by the API.
+     * Use `listRefunds({ cursor, limit })` instead.
+     */
+    getAllRefunds() {
+      throw new Error("getAllRefunds is deprecated; use listRefunds({ cursor, limit })");
+    },
   };
 }
 

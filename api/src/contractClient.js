@@ -2,7 +2,14 @@
  * Stellar contract client — thin wrapper around stellar-sdk contract invocation.
  * Reads CONTRACT_ID, STELLAR_NETWORK, STELLAR_RPC_URL from environment.
  */
-import { Contract, rpc, TransactionBuilder, Networks, Keypair } from "@stellar/stellar-sdk";
+import {
+  Contract,
+  rpc,
+  TransactionBuilder,
+  Networks,
+  Keypair,
+  nativeToScVal,
+} from "@stellar/stellar-sdk";
 
 const CONTRACT_ID = process.env.CONTRACT_ID;
 const NETWORK = process.env.STELLAR_NETWORK || "testnet";
@@ -70,6 +77,41 @@ export async function invoke(fn, args = []) {
     throw new ContractError("Transaction failed");
   }
   return getResult.returnValue;
+}
+
+/**
+ * Fetch a page of refunds using cursor-based pagination.
+ *
+ * Mirrors the payment history pagination pattern: pass the cursor returned by
+ * the previous page (or `null`/`undefined` for the first page) and a page size.
+ * Returns the raw contract page result, which callers should treat as
+ * `{ items, next_cursor }`.
+ *
+ * @param {string|null} [cursor] - Opaque cursor from the previous page.
+ * @param {number} [limit] - Maximum number of refunds to return.
+ */
+export async function getRefundPage(cursor = null, limit = 20) {
+  const args = [];
+  if (cursor != null) {
+    args.push(nativeToScVal(cursor, { type: "string" }));
+  } else {
+    args.push(nativeToScVal(null));
+  }
+  args.push(nativeToScVal(limit, { type: "u32" }));
+  return view("get_refund_page", args);
+}
+
+/**
+ * @deprecated `get_all_refunds` performs an unbounded scan and has been
+ * replaced by {@link getRefundPage}. This wrapper is kept only for backwards
+ * compatibility and will be removed in a future release.
+ */
+export async function getAllRefunds() {
+  // eslint-disable-next-line no-console
+  console.warn(
+    "getAllRefunds is deprecated and performs an unbounded scan; use getRefundPage(cursor, limit) instead."
+  );
+  return view("get_all_refunds");
 }
 
 async function _sourceAccount() {
