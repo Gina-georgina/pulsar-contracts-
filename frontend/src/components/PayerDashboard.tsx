@@ -6,6 +6,7 @@ import { ErrorMessage } from "./ContractCallStatus";
 import { WalletReconnectPrompt } from "./WalletReconnectPrompt";
 import { fetchPayerHistory } from "../contract";
 import type { PaymentRecord, PaymentFilter } from "../contract";
+import { ErrorBoundary } from "./ErrorBoundary";
 
 const PAGE_SIZE = 20;
 const STATUSES = ["Any", "Completed", "PartiallyRefunded", "FullyRefunded"] as const;
@@ -57,6 +58,14 @@ function writeDashboardState(
 }
 
 export function PayerDashboard() {
+  return (
+    <ErrorBoundary>
+      <PayerDashboardContent />
+    </ErrorBoundary>
+  );
+}
+
+function PayerDashboardContent() {
   const { address, error: walletError, status: walletStatus, showReconnectPrompt, connect, disconnect, dismissReconnectPrompt } = useWallet();
 
   const [records, setRecords] = useState<PaymentRecord[]>([]);

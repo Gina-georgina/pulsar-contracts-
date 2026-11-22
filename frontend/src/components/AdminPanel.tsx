@@ -3,6 +3,7 @@ import { useAdminAuth } from "../hooks/useAdminAuth";
 import { useAuditLog } from "../hooks/useAuditLog";
 import { useContractCall } from "../hooks/useContractCall";
 import { Spinner, ErrorMessage, SuccessBanner } from "./ContractCallStatus";
+import { ErrorBoundary } from "./ErrorBoundary";
 
 interface GlobalStats {
   totalPayments: number;
@@ -29,7 +30,15 @@ interface AdminPanelProps {
   triggerCleanup: (caller: string) => Promise<string>;
 }
 
-export function AdminPanel({
+export function AdminPanel(props: AdminPanelProps) {
+  return (
+    <ErrorBoundary>
+      <AdminPanelContent {...props} />
+    </ErrorBoundary>
+  );
+}
+
+function AdminPanelContent({
   adminAddress,
   fetchStats,
   fetchMerchants,
