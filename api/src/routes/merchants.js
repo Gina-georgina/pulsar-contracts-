@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { nativeToScVal, xdr } from "@stellar/stellar-sdk";
 import { invoke, view } from "../contractClient.js";
+import { ApiError } from "../errors.js";
 
 const router = Router();
 
@@ -12,7 +13,9 @@ router.post("/", async (req, res, next) => {
   try {
     const { merchant_address, name, description, contact_info, category } = req.body;
     if (!merchant_address || !name || !description || !contact_info || !category) {
-      return res.status(422).json({ error: { code: "InvalidInput", message: "Missing required fields" } });
+      return next(
+        new ApiError("InvalidInput", "Missing required fields", 422)
+      );
     }
     await invoke("register_merchant", [
       nativeToScVal(merchant_address, { type: "address" }),

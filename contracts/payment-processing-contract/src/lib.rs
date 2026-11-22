@@ -119,10 +119,79 @@ impl PaymentContract {
         Ok(())
     }
 
-    pub fn upgrade(env: Env, admin: Address, new_wasm_hash: BytesN<32>) -> Result<(), PaymentError> {
+    /// Upgrade the contract WASM and bump the stored contract version.
+    ///
+    /// Replaces the previous `upgrade` entry point, which updated the WASM but
+    /// left `contract_version` untouched, so off-chain tooling could not detect
+    /// that a migration had occurred (SC-054).
+    ///
+    /// The version is incremented by exactly one on every successful upgrade and
+    /// a `contract_upgraded` event is emitted with `(old_version, new_version)`.
+    ///
+    /// # Parameters
+    /// - `admin` — The stored admin address; must be authenticated.
+    /// - `new_wasm_hash` — The 32-byte hash of the new contract WASM.
+    ///
+    /// # Events
+    /// Emits `contract_upgraded` with payload `(old_version, new_version)`.
+    ///
+    /// # Errors
+    /// - [`PaymentError::Unauthorized`] if `admin` is not the stored admin.
+    /// - [`PaymentError::ArithmeticError`] if the version would overflow `u32`.
+    pub fn upgrade_contract(
+        env: Env,
+        admin: Address,
+        new_wasm_hash: BytesN<32>,
+    ) -> Result<(), PaymentError> {
         storage::bump_instance_ttl(&env);
         helper::require_admin(&env, &admin)?;
+        let old_version = storage::get_contract_version(&env);
+        let new_version = old_version
+            .checked_add(1)
+            .ok_or(PaymentError::ArithmeticError)?;
         env.deployer().update_current_contract_wasm(new_wasm_hash);
+        storage::set_contract_version(&env, new_version);
+        env.events().publish(
+            (String::from_str(&env, "contract_upgraded"),),
+            (old_version, new_version),
+        );
+        Ok(())
+    }
+
+    /// Set the stored contract version explicitly. Admin only.
+    ///
+    /// Intended for manual upgrades performed outside `upgrade_contract`
+    /// (e.g. when the WASM was already replaced). The version must be strictly
+    /// greater than the current one so that off-chain tooling never observes a
+    /// version regression.
+    ///
+    /// # Parameters
+    /// - `admin` — The stored admin address; must be authenticated.
+    /// - `new_version` — The version to store; must be greater than the current version.
+    ///
+    /// # Events
+    /// Emits `contract_upgraded` with payload `(old_version, new_version)`.
+    ///
+    /// # Errors
+    /// - [`PaymentError::Unauthorized`] if `admin` is not the stored admin.
+    /// - [`PaymentError::InvalidInput`] if `new_version` is not greater than the
+    ///   current version.
+    pub fn set_contract_version(
+        env: Env,
+        admin: Address,
+        new_version: u32,
+    ) -> Result<(), PaymentError> {
+        storage::bump_instance_ttl(&env);
+        helper::require_admin(&env, &admin)?;
+        let old_version = storage::get_contract_version(&env);
+        if new_version <= old_version {
+            return Err(PaymentError::InvalidInput);
+        }
+        storage::set_contract_version(&env, new_version);
+        env.events().publish(
+            (String::from_str(&env, "contract_upgraded"),),
+            (old_version, new_version),
+        );
         Ok(())
     }
 

@@ -203,6 +203,136 @@ fn test_upgrade_non_admin_fails() {
     );
 }
 
+// ── SC-054: contract version bump on upgrade ─────────────────────────────────
+
+/// SC-054: upgrade_contract() must bump the stored contract version by one.
+#[test]
+fn test_upgrade_contract_bumps_version() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    client.set_admin(&admins(&env, &admin), &1);
+    assert_eq!(client.get_version(), 1);
+
+    let new_wasm_hash = BytesN::from_array(&env, &[7u8; 32]);
+    client.upgrade_contract(&admins(&env, &admin), &new_wasm_hash);
+
+    assert_eq!(client.get_version(), 2);
+}
+
+/// SC-054: repeated upgrades must keep incrementing the version.
+#[test]
+fn test_upgrade_contract_bumps_version_repeatedly() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    client.set_admin(&admins(&env, &admin), &1);
+
+    let hash_a = BytesN::from_array(&env, &[1u8; 32]);
+    let hash_b = BytesN::from_array(&env, &[2u8; 32]);
+    client.upgrade_contract(&admins(&env, &admin), &hash_a);
+    assert_eq!(client.get_version(), 2);
+    client.upgrade_contract(&admins(&env, &admin), &hash_b);
+    assert_eq!(client.get_version(), 3);
+}
+
+/// SC-054: upgrade_contract() must emit a contract_upgraded event carrying the
+/// old and new version numbers.
+#[test]
+fn test_upgrade_contract_emits_event_with_versions() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    client.set_admin(&admins(&env, &admin), &1);
+
+    let before = env.events().all().len();
+    let new_wasm_hash = BytesN::from_array(&env, &[3u8; 32]);
+    client.upgrade_contract(&admins(&env, &admin), &new_wasm_hash);
+
+    let events = env.events().all();
+    assert!(
+        events.len() > before,
+        "contract_upgraded event must be emitted"
+    );
+
+    // The most recent event must carry (old_version, new_version) = (1, 2).
+    let (_, _, data) = events.get(events.len() - 1).unwrap();
+    let (old_version, new_version): (u32, u32) = data.try_into_val(&env).unwrap();
+    assert_eq!(old_version, 1);
+    assert_eq!(new_version, 2);
+}
+
+/// SC-054: upgrade_contract() must be admin-only.
+#[test]
+fn test_upgrade_contract_non_admin_fails() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let non_admin = Address::generate(&env);
+    client.set_admin(&admins(&env, &admin), &1);
+
+    let new_wasm_hash = BytesN::from_array(&env, &[4u8; 32]);
+    assert_eq!(
+        client.try_upgrade_contract(&admins(&env, &non_admin), &new_wasm_hash),
+        Err(Ok(PaymentError::Unauthorized))
+    );
+    // Version must be unchanged after a rejected upgrade.
+    assert_eq!(client.get_version(), 1);
+}
+
+/// SC-054: set_contract_version() must let the admin set an explicit version
+/// (used after a manual upgrade) and emit the contract_upgraded event.
+#[test]
+fn test_set_contract_version_success() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    client.set_admin(&admins(&env, &admin), &1);
+
+    let before = env.events().all().len();
+    client.set_contract_version(&admins(&env, &admin), &5);
+    assert_eq!(client.get_version(), 5);
+
+    let events = env.events().all();
+    assert!(
+        events.len() > before,
+        "contract_upgraded event must be emitted"
+    );
+    let (_, _, data) = events.get(events.len() - 1).unwrap();
+    let (old_version, new_version): (u32, u32) = data.try_into_val(&env).unwrap();
+    assert_eq!(old_version, 1);
+    assert_eq!(new_version, 5);
+}
+
+/// SC-054: set_contract_version() must reject a version that does not move
+/// forward, preventing accidental downgrades.
+#[test]
+fn test_set_contract_version_must_increase() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    client.set_admin(&admins(&env, &admin), &1);
+
+    assert_eq!(
+        client.try_set_contract_version(&admins(&env, &admin), &1),
+        Err(Ok(PaymentError::InvalidInput))
+    );
+    assert_eq!(
+        client.try_set_contract_version(&admins(&env, &admin), &0),
+        Err(Ok(PaymentError::InvalidInput))
+    );
+    assert_eq!(client.get_version(), 1);
+}
+
+/// SC-054: set_contract_version() must be admin-only.
+#[test]
+fn test_set_contract_version_non_admin_fails() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let non_admin = Address::generate(&env);
+    client.set_admin(&admins(&env, &admin), &1);
+
+    assert_eq!(
+        client.try_set_contract_version(&admins(&env, &non_admin), &2),
+        Err(Ok(PaymentError::Unauthorized))
+    );
+    assert_eq!(client.get_version(), 1);
+}
+
 #[test]
 fn test_ping() {
     let (env, client) = setup();

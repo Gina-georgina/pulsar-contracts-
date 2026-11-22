@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { nativeToScVal, scValToNative, xdr } from "@stellar/stellar-sdk";
 import { invoke, view } from "../contractClient.js";
+import { ApiError } from "../errors.js";
 
 const router = Router();
 
@@ -12,7 +13,7 @@ router.post("/", async (req, res, next) => {
   try {
     const { payer, order, signature } = req.body;
     if (!payer || !order || !signature) {
-      return res.status(422).json({ error: { code: "InvalidInput", message: "Missing required fields" } });
+      throw new ApiError(422, "InvalidInput", "Missing required fields");
     }
     await invoke("process_payment_with_signature", [
       nativeToScVal(payer, { type: "address" }),
@@ -33,7 +34,7 @@ router.get("/:id", async (req, res, next) => {
   try {
     const { caller } = req.query;
     if (!caller) {
-      return res.status(422).json({ error: { code: "InvalidInput", message: "caller query param required" } });
+      throw new ApiError(422, "InvalidInput", "caller query param required");
     }
     const result = await view("get_payment_by_id", [
       nativeToScVal(caller, { type: "address" }),
@@ -53,7 +54,7 @@ router.get("/", async (req, res, next) => {
   try {
     const { merchant, cursor, limit = 10, date_start, date_end, amount_min, amount_max, status = "Any", sort_field = "Date", sort_order = "Descending" } = req.query;
     if (!merchant) {
-      return res.status(422).json({ error: { code: "InvalidInput", message: "merchant query param required" } });
+      throw new ApiError(422, "InvalidInput", "merchant query param required");
     }
 
     const filter = buildFilter({ date_start, date_end, amount_min, amount_max, status });
