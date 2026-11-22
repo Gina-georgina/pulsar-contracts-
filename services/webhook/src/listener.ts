@@ -1,4 +1,5 @@
 import { rpc, xdr } from "@stellar/stellar-sdk";
+import { randomUUID } from "crypto";
 import { allWebhooks } from "./store";
 import { deliver, WebhookPayload } from "./deliver";
 
@@ -24,6 +25,8 @@ export async function startListener(
   console.log(`[listener] Watching contract ${contractId} on ${rpcUrl}`);
 
   setInterval(async () => {
+    // Correlation ID shared by every webhook delivery triggered in this cycle
+    const requestId = randomUUID();
     try {
       const info = await server.getLatestLedger();
       if (info.sequence <= latestLedger) return;
@@ -67,11 +70,11 @@ export async function startListener(
         );
 
         for (const hook of hooks) {
-          deliver(hook.url, payload).catch(() => {});
+          deliver(hook.url, payload, requestId).catch(() => {});
         }
       }
     } catch (err) {
-      console.error("[listener] Poll error:", err);
+      console.error(`[listener] Poll error (requestId=${requestId}):`, err);
     }
   }, pollIntervalMs);
 }

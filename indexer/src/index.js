@@ -2,6 +2,22 @@ require('dotenv').config();
 const { SorobanRpc, Networks } = require('@stellar/stellar-sdk');
 const { Pool } = require('pg');
 const express = require('express');
+const crypto = require('crypto');
+
+const REQUEST_ID_HEADER = 'X-Request-ID';
+
+function getRequestId(req) {
+  const incoming = req.headers[REQUEST_ID_HEADER.toLowerCase()];
+  return (typeof incoming === 'string' && incoming.trim()) || crypto.randomUUID();
+}
+
+function logWithRequestId(requestId, ...args) {
+  console.log(`[requestId=${requestId}]`, ...args);
+}
+
+function logErrorWithRequestId(requestId, ...args) {
+  console.error(`[requestId=${requestId}]`, ...args);
+}
 
 const {
   HORIZON_URL,
@@ -12,6 +28,16 @@ const {
 
 const db = new Pool({ connectionString: DATABASE_URL });
 const app = express();
+
+// Correlation ID middleware: read or generate X-Request-ID, echo it back,
+// and expose it to handlers for structured logging.
+app.use((req, res, next) => {
+  const requestId = getRequestId(req);
+  req.requestId = requestId;
+  res.setHeader(REQUEST_ID_HEADER, requestId);
+  next();
+});
+
 app.use(express.json());
 
 // ── REST API ──────────────────────────────────────────────────────────────────
@@ -21,6 +47,7 @@ app.get('/events', async (req, res) => {
   const params = [Number(limit), Number(offset)];
   let where = '';
   if (type) { where = 'WHERE event_type = $3'; params.push(type); }
+  logWithRequestId(req.requestId, `GET /events type=${type ?? 'all'} limit=${limit} offset=${offset}`);
   const { rows } = await db.query(
     `SELECT * FROM events ${where} ORDER BY ledger DESC LIMIT $1 OFFSET $2`,
     params
@@ -29,6 +56,7 @@ app.get('/events', async (req, res) => {
 });
 
 app.get('/events/:type', async (req, res) => {
+  logWithRequestId(req.requestId, `GET /events/${req.params.type}`);
   const { rows } = await db.query(
     'SELECT * FROM events WHERE event_type = $1 ORDER BY ledger DESC LIMIT 50',
     [req.params.type]
@@ -65,7 +93,8 @@ async function poll() {
   const server = new SorobanRpc.Server(HORIZON_URL);
   const startLedger = (await getLastIndexedLedger()) + 1;
 
-  console.log(`Polling events from ledger ${startLedger} for contract ${CONTRACT_ID}`);
+  const pollRequestId = crypto.randomUUID();
+  logWithRequestId(pollRequestId, `Polling events from ledger ${startLedger} for contract ${CONTRACT_ID}`);
 
   try {
     const response = await server.getEvents({
@@ -86,10 +115,10 @@ async function poll() {
     }
 
     if (response.events.length) {
-      console.log(`Indexed ${response.events.length} events`);
+      logWithRequestId(pollRequestId, `Indexed ${response.events.length} events`);
     }
   } catch (err) {
-    console.error('Poll error:', err.message);
+    logErrorWithRequestId(pollRequestId, 'Poll error:', err.message);
   }
 
   setTimeout(poll, 6000); // poll every ~1 ledger close

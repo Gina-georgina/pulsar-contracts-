@@ -28,6 +28,7 @@ const BASE_DELAY_MS = 1_000;
 export async function deliver(
   url: string,
   payload: WebhookPayload,
+  requestId?: string,
 ): Promise<void> {
   const body = JSON.stringify(payload);
   const firstAttemptAt = new Date().toISOString();
@@ -35,7 +36,7 @@ export async function deliver(
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     try {
-      await post(url, body);
+      await post(url, body, requestId);
       return; // success — nothing to DLQ
     } catch (err) {
       lastError = err instanceof Error ? err.message : String(err);
@@ -57,21 +58,25 @@ export async function deliver(
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
-function post(url: string, body: string): Promise<void> {
+function post(url: string, body: string, requestId?: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const parsed = new URL(url);
     const lib = parsed.protocol === "https:" ? https : http;
+    const headers: Record<string, string | number> = {
+      "Content-Type": "application/json",
+      "Content-Length": Buffer.byteLength(body),
+      "User-Agent": "pulsar-webhook/0.1",
+    };
+    if (requestId) {
+      headers["X-Request-ID"] = requestId;
+    }
     const req = lib.request(
       {
         hostname: parsed.hostname,
         port: parsed.port,
         path: parsed.pathname + parsed.search,
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Content-Length": Buffer.byteLength(body),
-          "User-Agent": "pulsar-webhook/0.1",
-        },
+        headers,
       },
       (res) => {
         if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {

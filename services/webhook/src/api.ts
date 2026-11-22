@@ -1,4 +1,5 @@
 import express from "express";
+import { randomUUID } from "crypto";
 import { registerWebhook, getWebhook, deleteWebhook } from "./store";
 import { checkDependencies, ComponentStatus } from "./health";
 import * as dlq from "./dlq";
@@ -7,6 +8,41 @@ import { deliver } from "./deliver";
 export function createRouter(rpcUrl: string, contractId: string): express.Router {
   const router = express.Router();
   router.use(express.json());
+
+  // ── Request correlation ────────────────────────────────────────────────────
+  //
+  // Every request carries an X-Request-ID. If the caller (e.g. the API
+  // gateway) already supplied one we reuse it so the ID stays consistent
+  // across services; otherwise we generate a UUID. The ID is echoed back on
+  // the response and included in every structured log entry.
+  router.use((req, res, next) => {
+    const incoming = req.header("X-Request-ID");
+    const requestId = incoming && incoming.trim() ? incoming.trim() : randomUUID();
+    res.locals.requestId = requestId;
+    res.set("X-Request-ID", requestId);
+    next();
+  });
+
+  function logRequest(req: express.Request, message: string, extra: Record<string, unknown> = {}) {
+    const requestId = (req.res?.locals.requestId as string | undefined) ?? "unknown";
+    console.log(
+      JSON.stringify({
+        level: "info",
+        service: "webhook",
+        requestId,
+        method: req.method,
+        path: req.originalUrl,
+        message,
+        timestamp: new Date().toISOString(),
+        ...extra,
+      })
+    );
+  }
+
+  function errorBody(req: express.Request, error: string, extra: Record<string, unknown> = {}) {
+    const requestId = (req.res?.locals.requestId as string | undefined) ?? "unknown";
+    return { error, requestId, ...extra };
+  }
 
   const metrics = {
     totalHealthCalls: 0,
@@ -104,16 +140,19 @@ export function createRouter(rpcUrl: string, contractId: string): express.Router
   router.post("/webhooks", (req, res) => {
     const { merchantAddress, url } = req.body as { merchantAddress?: string; url?: string };
     if (!merchantAddress || !url) {
-      res.status(400).json({ error: "merchantAddress and url are required" });
+      logRequest(req, "webhook registration rejected: missing fields");
+      res.status(400).json(errorBody(req, "merchantAddress and url are required"));
       return;
     }
     try {
       new URL(url);
     } catch {
-      res.status(400).json({ error: "url is not a valid URL" });
+      logRequest(req, "webhook registration rejected: invalid url");
+      res.status(400).json(errorBody(req, "url is not a valid URL"));
       return;
     }
     const reg = registerWebhook(merchantAddress, url);
+    logRequest(req, "webhook registered", { merchantAddress });
     res.status(201).json(reg);
   });
 
@@ -121,7 +160,8 @@ export function createRouter(rpcUrl: string, contractId: string): express.Router
   router.get("/webhooks/:merchantAddress", (req, res) => {
     const reg = getWebhook(req.params.merchantAddress);
     if (!reg) {
-      res.status(404).json({ error: "Not found" });
+      logRequest(req, "webhook registration not found", { merchantAddress: req.params.merchantAddress });
+      res.status(404).json(errorBody(req, "Not found"));
       return;
     }
     res.json(reg);
@@ -130,6 +170,9 @@ export function createRouter(rpcUrl: string, contractId: string): express.Router
   // DELETE /webhooks/:merchantAddress — remove registration
   router.delete("/webhooks/:merchantAddress", (req, res) => {
     const deleted = deleteWebhook(req.params.merchantAddress);
+    logRequest(req, deleted ? "webhook registration deleted" : "webhook registration not found", {
+      merchantAddress: req.params.merchantAddress,
+    });
     res.status(deleted ? 204 : 404).end();
   });
 
@@ -160,7 +203,8 @@ export function createRouter(rpcUrl: string, contractId: string): express.Router
   router.get("/admin/dlq/:id", (req, res) => {
     const entry = dlq.getEntry(req.params.id);
     if (!entry) {
-      res.status(404).json({ error: "DLQ entry not found" });
+      logRequest(req, "DLQ entry not found", { id: req.params.id });
+      res.status(404).json(errorBody(req, "DLQ entry not found"));
       return;
     }
     res.json(entry);
@@ -174,7 +218,8 @@ export function createRouter(rpcUrl: string, contractId: string): express.Router
   router.post("/admin/dlq/:id/replay", async (req, res) => {
     const entry = dlq.getEntry(req.params.id);
     if (!entry) {
-      res.status(404).json({ error: "DLQ entry not found" });
+      logRequest(req, "DLQ replay rejected: entry not found", { id: req.params.id });
+      res.status(404).json(errorBody(req, "DLQ entry not found"));
       return;
     }
 
@@ -183,18 +228,21 @@ export function createRouter(rpcUrl: string, contractId: string): express.Router
     try {
       await deliver(entry.url, entry.payload);
       dlq.remove(req.params.id);
+      logRequest(req, "DLQ entry replayed", { id: req.params.id });
       res
         .status(200)
         .json({ success: true, message: `Entry ${req.params.id} replayed and removed from DLQ.` });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      res.status(502).json({ success: false, error: message });
+      logRequest(req, "DLQ replay failed", { id: req.params.id, error: message });
+      res.status(502).json(errorBody(req, message, { success: false }));
     }
   });
 
   // DELETE /admin/dlq/:id — discard a DLQ entry without replaying
   router.delete("/admin/dlq/:id", (req, res) => {
     const removed = dlq.remove(req.params.id);
+    logRequest(req, removed ? "DLQ entry discarded" : "DLQ entry not found", { id: req.params.id });
     res.status(removed ? 204 : 404).end();
   });
 

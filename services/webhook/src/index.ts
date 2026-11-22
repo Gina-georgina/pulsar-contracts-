@@ -1,6 +1,7 @@
 import express from "express";
 import { createRouter } from "./api";
 import { startListener } from "./listener";
+import { requestIdMiddleware } from "./requestId";
 
 const PORT = Number(process.env.PORT ?? 3001);
 const RPC_URL = process.env.RPC_URL ?? "https://soroban-testnet.stellar.org";
@@ -13,6 +14,7 @@ if (!CONTRACT_ID) {
 }
 
 const app = express();
+app.use(requestIdMiddleware);
 app.use(createRouter(RPC_URL, CONTRACT_ID));
 
 app.listen(PORT, () => {

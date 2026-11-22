@@ -30,19 +30,25 @@ const CONTRACT_ERROR_STATUS = {
 };
 
 export function errorMiddleware(err, req, res, _next) {
+  const requestId = req.id;
+
   if (err instanceof ContractError) {
     const match = Object.entries(CONTRACT_ERROR_STATUS).find(([name]) =>
       err.message.includes(name)
     );
     const status = match ? match[1] : 500;
     const code = match ? match[0] : "ContractError";
-    return res.status(status).json({ error: { code, message: err.message } });
+    return res.status(status).json({ error: { code, message: err.message, requestId } });
   }
 
   if (err.status) {
-    return res.status(err.status).json({ error: { code: "BadRequest", message: err.message } });
+    return res
+      .status(err.status)
+      .json({ error: { code: "BadRequest", message: err.message, requestId } });
   }
 
-  console.error(err);
-  res.status(500).json({ error: { code: "InternalError", message: "Internal server error" } });
+  console.error({ requestId, error: err });
+  res
+    .status(500)
+    .json({ error: { code: "InternalError", message: "Internal server error", requestId } });
 }

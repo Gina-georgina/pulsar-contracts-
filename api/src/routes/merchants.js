@@ -14,6 +14,12 @@ router.post("/", async (req, res, next) => {
     if (!merchant_address || !name || !description || !contact_info || !category) {
       return res.status(422).json({ error: { code: "InvalidInput", message: "Missing required fields" } });
     }
+    console.log(JSON.stringify({
+      level: "info",
+      message: "Registering merchant",
+      requestId: req.id,
+      merchantAddress: merchant_address,
+    }));
     await invoke("register_merchant", [
       nativeToScVal(merchant_address, { type: "address" }),
       nativeToScVal(name, { type: "string" }),
@@ -21,7 +27,7 @@ router.post("/", async (req, res, next) => {
       nativeToScVal(contact_info, { type: "string" }),
       xdr.ScVal.scvVec([xdr.ScVal.scvSymbol(category)]),
       xdr.ScVal.scvVoid(),
-    ]);
+    ], { requestId: req.id });
     res.status(201).json({ message: "Merchant registered" });
   } catch (err) {
     next(err);
@@ -33,9 +39,15 @@ router.post("/", async (req, res, next) => {
  */
 router.get("/:id", async (req, res, next) => {
   try {
+    console.log(JSON.stringify({
+      level: "info",
+      message: "Fetching merchant",
+      requestId: req.id,
+      merchantId: req.params.id,
+    }));
     const result = await view("get_merchant", [
       nativeToScVal(req.params.id, { type: "address" }),
-    ]);
+    ], { requestId: req.id });
     res.json(scValToNative(result));
   } catch (err) {
     next(err);

@@ -16,14 +16,21 @@ const DEFAULT_BASE_URL = process.env.API_BASE_URL ?? "http://localhost:3000";
 
 /**
  * Core fetch wrapper — throws CancelledError on abort, ApiError on HTTP errors.
+ *
+ * If `requestId` is provided it is sent as the `X-Request-ID` header so the
+ * request can be correlated across services for distributed tracing.
  */
-async function apiFetch(path, { signal, method = "GET", body, baseUrl = DEFAULT_BASE_URL } = {}) {
+async function apiFetch(path, { signal, method = "GET", body, baseUrl = DEFAULT_BASE_URL, requestId } = {}) {
+  const headers = {};
+  if (body) headers["Content-Type"] = "application/json";
+  if (requestId) headers["X-Request-ID"] = requestId;
+
   let response;
   try {
     response = await fetch(`${baseUrl}${path}`, {
       method,
       signal,
-      headers: body ? { "Content-Type": "application/json" } : undefined,
+      headers: Object.keys(headers).length ? headers : undefined,
       body: body ? JSON.stringify(body) : undefined,
     });
   } catch (err) {
@@ -56,29 +63,29 @@ export function createApiClient({ baseUrl = DEFAULT_BASE_URL } = {}) {
 
     // ── Merchants ────────────────────────────────────────────────────────────
 
-    registerMerchant(data, { signal } = {}) {
-      return apiFetch("/api/merchants", { ...opts, method: "POST", body: data, signal });
+    registerMerchant(data, { signal, requestId } = {}) {
+      return apiFetch("/api/merchants", { ...opts, method: "POST", body: data, signal, requestId });
     },
 
-    getMerchant(id, { signal } = {}) {
-      return apiFetch(`/api/merchants/${encodeURIComponent(id)}`, { ...opts, signal });
+    getMerchant(id, { signal, requestId } = {}) {
+      return apiFetch(`/api/merchants/${encodeURIComponent(id)}`, { ...opts, signal, requestId });
     },
 
     // ── Payments ─────────────────────────────────────────────────────────────
 
-    processPayment(data, { signal } = {}) {
-      return apiFetch("/api/payments", { ...opts, method: "POST", body: data, signal });
+    processPayment(data, { signal, requestId } = {}) {
+      return apiFetch("/api/payments", { ...opts, method: "POST", body: data, signal, requestId });
     },
 
-    getPayment(id, caller, { signal } = {}) {
-      return apiFetch(`/api/payments/${encodeURIComponent(id)}?caller=${encodeURIComponent(caller)}`, { ...opts, signal });
+    getPayment(id, caller, { signal, requestId } = {}) {
+      return apiFetch(`/api/payments/${encodeURIComponent(id)}?caller=${encodeURIComponent(caller)}`, { ...opts, signal, requestId });
     },
 
-    listPayments(params = {}, { signal } = {}) {
+    listPayments(params = {}, { signal, requestId } = {}) {
       const qs = new URLSearchParams(
         Object.entries(params).filter(([, v]) => v != null)
       ).toString();
-      return apiFetch(`/api/payments${qs ? `?${qs}` : ""}`, { ...opts, signal });
+      return apiFetch(`/api/payments${qs ? `?${qs}` : ""}`, { ...opts, signal, requestId });
     },
   };
 }

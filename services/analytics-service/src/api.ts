@@ -1,7 +1,58 @@
 // SPDX-License-Identifier: MIT
-import express, { Request, Response } from "express";
+import express, { NextFunction, Request, Response } from "express";
+import { randomUUID } from "crypto";
 import { Pool } from "pg";
 import { AnalyticsCache, cacheTtlFromEnv } from "./cache";
+
+/** Header used to correlate a request across services. */
+export const REQUEST_ID_HEADER = "X-Request-ID";
+
+/** Returns the incoming request ID (if any) or a freshly generated UUID. */
+export function resolveRequestId(req: Request): string {
+  const incoming = req.header(REQUEST_ID_HEADER);
+  if (typeof incoming === "string" && incoming.trim().length > 0) {
+    return incoming.trim();
+  }
+  return randomUUID();
+}
+
+/** Reads the request ID previously attached to the request by the middleware. */
+export function requestIdOf(req: Request): string {
+  return (req as Request & { requestId?: string }).requestId ?? "";
+}
+
+/** Emits a structured log line that always carries the request ID. */
+export function logWithRequestId(
+  level: "info" | "warn" | "error",
+  requestId: string,
+  message: string,
+  extra: Record<string, unknown> = {}
+): void {
+  const entry = JSON.stringify({
+    level,
+    service: "analytics-service",
+    request_id: requestId,
+    message,
+    timestamp: new Date().toISOString(),
+    ...extra,
+  });
+  if (level === "error") {
+    console.error(entry);
+  } else if (level === "warn") {
+    console.warn(entry);
+  } else {
+    console.log(entry);
+  }
+}
+
+/** Express middleware: propagate or generate the X-Request-ID header. */
+export function requestIdMiddleware(req: Request, res: Response, next: NextFunction): void {
+  const requestId = resolveRequestId(req);
+  (req as Request & { requestId?: string }).requestId = requestId;
+  res.setHeader(REQUEST_ID_HEADER, requestId);
+  next();
+}
+=======
 
 const REPORT_TABLES: Record<string, string> = {
   payments: "payments",
@@ -46,6 +97,8 @@ export function createAnalyticsRouter(databaseUrl: string): express.Router {
   const db = new Pool({ connectionString: databaseUrl });
   const cache = new AnalyticsCache(cacheTtlFromEnv());
 
+  router.use(requestIdMiddleware);
+
   router.get("/analytics/summary", async (req, res) => {
     try {
       const result = await cache.getOrCompute(cacheKeyFor(req), async () => {
@@ -81,8 +134,11 @@ export function createAnalyticsRouter(databaseUrl: string): express.Router {
       });
       res.json(result);
     } catch (err) {
-      console.error(err);
-      res.status(500).json({ error: "Failed to compute analytics summary" });
+      const requestId = requestIdOf(req);
+      logWithRequestId("error", requestId, "Failed to compute analytics summary", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      res.status(500).json({ error: "Failed to compute analytics summary", request_id: requestId });
     }
   });
 
@@ -106,8 +162,11 @@ export function createAnalyticsRouter(databaseUrl: string): express.Router {
       });
       res.json(result);
     } catch (err) {
-      console.error(err);
-      res.status(500).json({ error: "Failed to compute trends" });
+      const requestId = requestIdOf(req);
+      logWithRequestId("error", requestId, "Failed to compute trends", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      res.status(500).json({ error: "Failed to compute trends", request_id: requestId });
     }
   });
 
@@ -143,8 +202,11 @@ export function createAnalyticsRouter(databaseUrl: string): express.Router {
       });
       res.json(result);
     } catch (err) {
-      console.error(err);
-      res.status(500).json({ error: "Failed to compute customer segments" });
+      const requestId = requestIdOf(req);
+      logWithRequestId("error", requestId, "Failed to compute customer segments", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      res.status(500).json({ error: "Failed to compute customer segments", request_id: requestId });
     }
   });
 
@@ -170,8 +232,11 @@ export function createAnalyticsRouter(databaseUrl: string): express.Router {
       const { rows } = await db.query(query, params);
       res.json({ report: rows });
     } catch (err) {
-      console.error(err);
-      res.status(500).json({ error: "Failed to generate custom report" });
+      const requestId = requestIdOf(req);
+      logWithRequestId("error", requestId, "Failed to generate custom report", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      res.status(500).json({ error: "Failed to generate custom report", request_id: requestId });
     }
   });
 
@@ -217,8 +282,11 @@ export function createAnalyticsRouter(databaseUrl: string): express.Router {
       });
       res.json(result);
     } catch (err) {
-      console.error(err);
-      res.status(500).json({ error: "Failed to compute per-token breakdown" });
+      const requestId = requestIdOf(req);
+      logWithRequestId("error", requestId, "Failed to compute per-token breakdown", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      res.status(500).json({ error: "Failed to compute per-token breakdown", request_id: requestId });
     }
   });
 
@@ -279,8 +347,11 @@ export function createAnalyticsRouter(databaseUrl: string): express.Router {
       });
       res.json(result);
     } catch (err) {
-      console.error(err);
-      res.status(500).json({ error: "Failed to compute time-series aggregation" });
+      const requestId = requestIdOf(req);
+      logWithRequestId("error", requestId, "Failed to compute time-series aggregation", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      res.status(500).json({ error: "Failed to compute time-series aggregation", request_id: requestId });
     }
   });
 
