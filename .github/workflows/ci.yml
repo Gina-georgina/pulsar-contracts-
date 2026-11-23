@@ -349,6 +349,59 @@ jobs:
         with:
           command: check
 
+  # DO-032: Lint and type-check all Node.js/TypeScript packages. Clippy only
+  # covers the Rust contract; this job keeps the frontend, dashboard, services
+  # and SDK free of lint and type errors. Any non-zero exit fails the job.
+  lint:
+    name: Lint & Typecheck (Node.js/TypeScript)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # package path, whether it is a TypeScript package (needs tsc --noEmit)
+          - package: frontend
+            typescript: true
+          - package: dashboard
+            typescript: false
+          - package: api
+            typescript: false
+          - package: indexer
+            typescript: false
+          - package: monitoring
+            typescript: false
+          - package: sdk
+            typescript: true
+          - package: services/analytics-service
+            typescript: true
+          - package: services/webhook
+            typescript: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies (${{ matrix.package }})
+        working-directory: ${{ matrix.package }}
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: ESLint (${{ matrix.package }})
+        working-directory: ${{ matrix.package }}
+        run: npx --no-install eslint .
+
+      - name: TypeScript strict check (${{ matrix.package }})
+        if: matrix.typescript
+        working-directory: ${{ matrix.package }}
+        run: npx --no-install tsc --noEmit
+
   # MISC-014: errors.ts / error-registry.json are generated from error.rs by
   # sdk/scripts/generate-errors.js. Fail CI if the committed files have
   # drifted from what error.rs would generate, so the two cannot silently
