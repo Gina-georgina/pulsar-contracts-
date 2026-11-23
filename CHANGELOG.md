@@ -36,6 +36,8 @@ Versions follow **MAJOR.MINOR.PATCH** semantics:
 - `sdk/.npmignore`: excludes source and test files from the published package.
 - `sdk/README.md`: comprehensive README with installation, quick start, full API docs, and links to the idempotency guide and contract API reference.
 - `README.md`: added SDK & Integrator Resources table linking to the SDK, API reference, ABI, and idempotency guide.
+- `SECURITY.md`: added a "Rewards and Recognition" section covering release-notes credit, a Security Hall of Fame, advisory credit, what counts as a valid report, the bounty scope (on-chain contract plus off-chain services), and the planned post-mainnet bug bounty platform listing (Immunefi / HackerOne). Closes #492.
+- `README.md`: added a Security section linking the disclosure policy and the bug bounty / researcher recognition program.
 
 ### Changed
 - Remove unused `StorageError` (code 51) variant from the payment contract ABI and SDK (`error.rs`, `sdk/errors.ts`, `sdk/error-registry.json`). The variant was never returned by any code path; removing it reduces ABI noise for integrators. Closes #9.
