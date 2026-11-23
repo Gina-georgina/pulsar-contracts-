@@ -93,3 +93,53 @@ jobs:
           gh release create "$TAG" \
             --title "Release $TAG" \
             --notes-file release_notes.md
+
+  publish-docker-images:
+    name: Publish Docker images to GHCR
+    needs: [check-version, release]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push indexer image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: services/indexer/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}/indexer:${{ needs.check-version.outputs.version }}
+            ghcr.io/${{ github.repository }}/indexer:latest
+
+      - name: Build and push webhook image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: services/webhook/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}/webhook:${{ needs.check-version.outputs.version }}
+            ghcr.io/${{ github.repository }}/webhook:latest
+
+      - name: Build and push analytics-service image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: services/analytics-service/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}/analytics-service:${{ needs.check-version.outputs.version }}
+            ghcr.io/${{ github.repository }}/analytics-service:latest
