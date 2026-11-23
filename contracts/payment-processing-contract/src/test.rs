@@ -2152,6 +2152,79 @@ fn test_get_subscription_not_found_fails() {
     );
 }
 
+/// SC-038: process_subscription_payment must enforce the token allowlist.
+/// A subscription created with a token that is not on the allowlist must be
+/// rejected at charge time, mirroring process_payment_with_signature.
+#[test]
+fn test_process_subscription_payment_non_allowlisted_token_fails() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let merchant = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let allowed_token = create_token(&env, &admin);
+    let blocked_token = create_token(&env, &admin);
+
+    client.set_admin(&admins(&env, &admin), &1);
+    client.register_merchant(
+        &merchant,
+        &str(&env, "Store"),
+        &str(&env, "desc"),
+        &str(&env, "c@c.com"),
+        &MerchantCategory::Retail,
+        &None,
+    );
+    mint(&env, &blocked_token, &payer, 5000);
+
+    // Enable the allowlist and only allow `allowed_token`.
+    client.set_token_allowlist_mode(&admins(&env, &admin), &true);
+    client.add_token_to_allowlist(&admins(&env, &admin), &allowed_token);
+
+    let sub_id = bytes(&env, "SUB_BLOCKED");
+    client.create_subscription(&payer, &merchant, &sub_id, &make_plan(&env, &blocked_token));
+
+    env.ledger().with_mut(|l| l.timestamp = 1000);
+    assert_eq!(
+        client.try_process_subscription_payment(&payer, &sub_id),
+        Err(Ok(PaymentError::TokenNotAllowed))
+    );
+}
+
+/// SC-042: a merchant cannot accumulate more than MAX_SUBSCRIPTIONS_PER_MERCHANT
+/// subscriptions; the next create_subscription must return InvalidInput.
+#[test]
+fn test_create_subscription_per_merchant_limit_enforced() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let merchant = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let token = create_token(&env, &admin);
+
+    client.set_admin(&admins(&env, &admin), &1);
+    client.register_merchant(
+        &merchant,
+        &str(&env, "Store"),
+        &str(&env, "desc"),
+        &str(&env, "c@c.com"),
+        &MerchantCategory::Retail,
+        &None,
+    );
+
+    let plan = make_plan(&env, &token);
+    for i in 0..crate::MAX_SUBSCRIPTIONS_PER_MERCHANT {
+        let sub_id = Bytes::from_slice(&env, alloc::format!("SUB_{:05}", i).as_bytes());
+        client.create_subscription(&payer, &merchant, &sub_id, &plan);
+    }
+
+    let overflow_id = Bytes::from_slice(
+        &env,
+        alloc::format!("SUB_{:05}", crate::MAX_SUBSCRIPTIONS_PER_MERCHANT).as_bytes(),
+    );
+    assert_eq!(
+        client.try_create_subscription(&payer, &merchant, &overflow_id, &plan),
+        Err(Ok(PaymentError::InvalidInput))
+    );
+}
+
 // ── T-020: inactive merchant payment ─────────────────────────────────────────
 
 #[test]

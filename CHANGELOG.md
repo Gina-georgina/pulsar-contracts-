@@ -43,6 +43,9 @@ Versions follow **MAJOR.MINOR.PATCH** semantics:
 - Add best-effort zero/burn admin address validation and test coverage for invalid admin assignment.
 - Add date-filter coverage for `get_global_payment_stats` to cover all-payments and no-payments ranges.
 - Add `InsufficientBalance` (code 25) to `PaymentError` enum and pre-check payer/merchant token balances before transfers in `process_payment_with_signature` and `execute_refund`, returning a typed error instead of a host trap. Closes #10.
+- Enforce the token allowlist in `process_subscription_payment` before the token transfer, matching `process_payment_with_signature`; subscriptions using a non-allowlisted token are now rejected when the allowlist is enabled. Closes #274.
+- Add `MAX_SUBSCRIPTIONS_PER_MERCHANT` (10 000) cap; `create_subscription` now returns `PaymentError::InvalidInput` when a merchant exceeds the limit, bounding the `get_subscription_page` scan. Closes #278.
+- Remove the unused `ConnectionPoolConfig` module (`pool.rs`) and its `DataKey::Pool*` storage keys. The concept has no meaning in Soroban's single-threaded, transactional VM; removal reduces storage overhead, code complexity, and WASM binary size. Closes #281.
 
 ---
 

@@ -32,7 +32,9 @@ Types: `contracts/payment-processing-contract/src/types.rs`
    `payer` must sign (`require_auth`). Fails with `SubscriptionAlreadyExists`
    if the ID is reused, `MerchantNotFound` / `MerchantInactive` if the
    merchant isn't a valid active merchant, and `InvalidInput` if
-   `plan.interval == 0` or `plan.amount <= 0`.
+   `plan.interval == 0` or `plan.amount <= 0`. A merchant may hold at most
+   `MAX_SUBSCRIPTIONS_PER_MERCHANT` (10 000) subscriptions; once that limit
+   is reached, further `create_subscription` calls fail with `InvalidInput`.
 2. **Charge** — `process_subscription_payment(caller, subscription_id)` must
    be called once per billing interval by an off-chain scheduler. **`caller`
    must be the subscription's `payer` address** and must provide
@@ -41,7 +43,10 @@ Types: `contracts/payment-processing-contract/src/types.rs`
    it cannot act as an arbitrary third party). The first charge is always
    allowed (`last_charged_at == 0`); every subsequent charge requires
    `now >= last_charged_at + plan.interval`, otherwise the call fails with
-   `SubscriptionIntervalNotElapsed`. Each successful charge transfers
+   `SubscriptionIntervalNotElapsed`. When the token allowlist is enabled,
+   `plan.token` must be on the admin-managed allowlist; otherwise the charge
+   fails with `TokenNotAllowed` (the same check applied by
+   `process_payment_with_signature`). Each successful charge transfers
    `plan.amount` of `plan.token` from payer to merchant and emits a
    `subscription_charged` event.
 3. **Cancel** — `cancel_subscription(caller, subscription_id)`, callable only
@@ -82,8 +87,11 @@ a future iteration, but it is out of scope for this contract-level change.
 ## Tests
 
 Unit tests covering the lifecycle (creation, duplicate IDs, inactive
-merchants, cancellation, first charge, interval enforcement, and charging a
+merchants, the per-merchant subscription limit, cancellation, first charge,
+interval enforcement, token allowlist enforcement on charges, and charging a
 cancelled subscription) live in
 `contracts/payment-processing-contract/src/test.rs`, e.g.
 `test_create_subscription_success`, `test_cancel_subscription_wrong_payer_fails`,
-`test_process_subscription_payment_before_interval_fails`.
+`test_process_subscription_payment_before_interval_fails`,
+`test_create_subscription_merchant_limit_exceeded`, and
+`test_process_subscription_payment_token_not_allowed`.

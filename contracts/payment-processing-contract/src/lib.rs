@@ -38,6 +38,13 @@ use types::{
     RefundRecord, RefundStatus, SortField, SortOrder,
 };
 
+/// Maximum number of subscriptions a single merchant may accumulate (SC-042).
+///
+/// Bounds the size of `DataKey::MerchantSubscriptions` so that
+/// `list_subscriptions_by_merchant` cannot scan an unbounded list and exceed
+/// Soroban CPU/memory limits.
+pub const MAX_SUBSCRIPTIONS_PER_MERCHANT: u32 = 10_000;
+
 #[contract]
 pub struct PaymentContract;
 
@@ -2047,7 +2054,9 @@ impl PaymentContract {
     /// - [`PaymentError::SubscriptionAlreadyExists`] if the ID is already in use.
     /// - [`PaymentError::MerchantNotFound`] if the merchant is not registered.
     /// - [`PaymentError::MerchantInactive`] if the merchant has been deactivated.
-    /// - [`PaymentError::InvalidInput`] if `plan.interval` is zero or `plan.amount` ≤ 0.
+    /// - [`PaymentError::InvalidInput`] if `plan.interval` is zero or `plan.amount` ≤ 0,
+    ///   or if the merchant already has [`MAX_SUBSCRIPTIONS_PER_MERCHANT`]
+    ///   subscriptions (SC-042).
     pub fn create_subscription(
         env: Env,
         payer: Address,
@@ -2068,6 +2077,13 @@ impl PaymentContract {
         let m = storage::get_merchant(&env, &merchant).ok_or(PaymentError::MerchantNotFound)?;
         if !m.active {
             return Err(PaymentError::MerchantInactive);
+        }
+        // SC-042: cap the number of subscriptions per merchant so that
+        // `list_subscriptions_by_merchant` cannot scan an unbounded list.
+        if storage::get_merchant_subscription_ids(&env, &merchant).len()
+            >= MAX_SUBSCRIPTIONS_PER_MERCHANT
+        {
+            return Err(PaymentError::InvalidInput);
         }
         let now = env.ledger().timestamp();
         let sub = types::SubscriptionState {
@@ -2140,6 +2156,8 @@ impl PaymentContract {
     /// - [`PaymentError::Unauthorized`] if `caller` is not the payer.
     /// - [`PaymentError::SubscriptionIntervalNotElapsed`] if the interval has not
     ///   passed since the last successful charge.
+    /// - [`PaymentError::TokenNotAllowed`] if the token allowlist is enabled and
+    ///   `plan.token` is not on the allowlist (SC-038).
     pub fn process_subscription_payment(
         env: Env,
         caller: Address,
