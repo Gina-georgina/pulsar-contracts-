@@ -141,7 +141,7 @@ test("shows recent searches when input is empty", async () => {
   expect(screen.getByText("Alice")).toBeInTheDocument();
 });
 
-test("search history is persisted to localStorage", async () => {
+test("search history is persisted to localStorage on submit", async () => {
   const onSearch = makeSearch();
   render(<GlobalSearchBar onSearch={onSearch} />);
 
@@ -150,12 +150,42 @@ test("search history is persisted to localStorage", async () => {
   act(() => { jest.advanceTimersByTime(300); });
   await act(async () => {});
 
-  // Select a result
-  const option = screen.getByRole("option", { name: /acme store/i });
-  fireEvent.mouseDown(option);
+  // Submit via Enter key
+  fireEvent.keyDown(input, { key: "Enter" });
 
   const stored = JSON.parse(localStorage.getItem("pulsar_search_history") ?? "[]");
   expect(stored).toContain("acme");
+});
+
+test("partial terms are not stored in search history", async () => {
+  const onSearch = makeSearch();
+  render(<GlobalSearchBar onSearch={onSearch} />);
+
+  const input = screen.getByRole("combobox");
+  fireEvent.change(input, { target: { value: "G" } });
+  fireEvent.change(input, { target: { value: "GA" } });
+  fireEvent.change(input, { target: { value: "GAT" } });
+
+  // Advance past the debounce window without submitting
+  act(() => { jest.advanceTimersByTime(1000); });
+  await act(async () => {});
+
+  const storedAfterTyping = JSON.parse(
+    localStorage.getItem("pulsar_search_history") ?? "[]",
+  );
+  expect(storedAfterTyping).not.toContain("G");
+  expect(storedAfterTyping).not.toContain("GA");
+  expect(storedAfterTyping).not.toContain("GAT");
+
+  // Now submit the full query
+  fireEvent.keyDown(input, { key: "Enter" });
+
+  const storedAfterSubmit = JSON.parse(
+    localStorage.getItem("pulsar_search_history") ?? "[]",
+  );
+  expect(storedAfterSubmit).toContain("GAT");
+  expect(storedAfterSubmit).not.toContain("G");
+  expect(storedAfterSubmit).not.toContain("GA");
 });
 
 test("shows 'No results' message when search returns empty", async () => {
