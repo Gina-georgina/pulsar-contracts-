@@ -4,8 +4,58 @@ on:
   push:
     branches:
       - main
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+*'
 
 jobs:
+  # DO-021: Validate that the pushed tag is a valid semantic version before
+  # any release work happens. Non-semver tags (e.g. `test`, `v1`) are rejected.
+  validate-tag:
+    name: Validate Semver Tag (DO-021)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check tag matches semver pattern
+        run: |
+          SEMVER_REGEX='^v[0-9]+\.[0-9]+\.[0-9]+.*$'
+          TAG="${GITHUB_REF#refs/tags/}"
+          if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
+            echo "Not a tag push (branch: ${GITHUB_REF}); skipping semver validation."
+            exit 0
+          fi
+          if ! echo "$TAG" | grep -Eq "$SEMVER_REGEX"; then
+            echo "::error::DO-021: Tag '$TAG' is not a valid semantic version."
+            echo "::error::Tags must match v[0-9]+.[0-9]+.[0-9]+* (e.g. v1.2.3)."
+            exit 1
+          fi
+          echo "Tag '$TAG' is a valid semantic version."
+
+  # DO-021: Bash assertion test for the version regex.
+  semver-regex-test:
+    name: Semver Regex Test (DO-021)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Assert regex accepts valid and rejects invalid tags
+        run: |
+          SEMVER_REGEX='^v[0-9]+\.[0-9]+\.[0-9]+.*$'
+          fail=0
+          for tag in v1.2.3 v0.0.1 v10.20.30 v1.2.3-rc.1; do
+            if echo "$tag" | grep -Eq "$SEMVER_REGEX"; then
+              echo "PASS: '$tag' accepted"
+            else
+              echo "FAIL: '$tag' should be accepted"
+              fail=1
+            fi
+          done
+          for tag in test v1 1.2.3 v1.2 v1.2.3.4x; do
+            if echo "$tag" | grep -Eq "$SEMVER_REGEX"; then
+              echo "FAIL: '$tag' should be rejected"
+              fail=1
+            else
+              echo "PASS: '$tag' rejected"
+            fi
+          done
+          exit $fail
+
   # SEC-001: Block the release if no completed audit report has been published
   # in this repository. The report must exist as a file matching the pattern
   # docs/audit-report-*.{pdf,md} before a release tag can be created.
@@ -61,7 +111,7 @@ jobs:
 
   release:
     name: Create GitHub Release
-    needs: [audit-gate, check-version]
+    needs: [audit-gate, validate-tag, semver-regex-test, check-version]
     if: needs.check-version.outputs.tag_exists == 'false'
     runs-on: ubuntu-latest
     permissions:

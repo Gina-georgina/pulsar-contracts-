@@ -2037,6 +2037,13 @@ impl PaymentContract {
     /// charges. The first payment is not made at creation — it is collected on
     /// the first call to `process_subscription_payment`.
     ///
+    /// # Off-chain scheduler requirement
+    ///
+    /// Creating a subscription does not schedule anything on-chain. An
+    /// off-chain scheduler must call `process_subscription_payment` at each
+    /// interval boundary for charges to occur. See `docs/SUBSCRIPTION_GUIDE.md`
+    /// (section "Scheduler Requirements") for details and a Node.js example.
+    ///
     /// # Parameters
     /// - `payer` — The address that will be charged at each interval; must be authenticated.
     /// - `merchant` — The merchant receiving the recurring payments.
@@ -2130,6 +2137,19 @@ impl PaymentContract {
     /// payer. The interval guard ensures the payment cannot be collected twice
     /// within the same billing cycle.
     ///
+    /// # Off-chain scheduler requirement
+    ///
+    /// This contract does **not** charge subscriptions automatically — Soroban
+    /// contracts cannot self-trigger. Recurring payments only happen when an
+    /// off-chain scheduler calls `process_subscription_payment` at each interval
+    /// boundary (`last_charged_at + plan.interval`). Without such a scheduler,
+    /// subscriptions are created but never charged.
+    ///
+    /// See `docs/SUBSCRIPTION_GUIDE.md` (section "Scheduler Requirements") for
+    /// the full integration guide, including a minimal Node.js `node-cron`
+    /// example and the recommended handling of
+    /// [`PaymentError::SubscriptionIntervalNotElapsed`].
+    ///
     /// # Parameters
     /// - `caller` — Must equal the subscription's payer; must be authenticated.
     /// - `subscription_id` — The subscription to charge.
@@ -2139,7 +2159,9 @@ impl PaymentContract {
     /// - [`PaymentError::SubscriptionNotActive`] if the subscription is cancelled.
     /// - [`PaymentError::Unauthorized`] if `caller` is not the payer.
     /// - [`PaymentError::SubscriptionIntervalNotElapsed`] if the interval has not
-    ///   passed since the last successful charge.
+    ///   passed since the last successful charge. Schedulers should treat this as
+    ///   a benign "too early" signal (e.g. clock drift or a duplicate tick) and
+    ///   retry on the next tick rather than treating it as a failure.
     pub fn process_subscription_payment(
         env: Env,
         caller: Address,

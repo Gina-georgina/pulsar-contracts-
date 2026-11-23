@@ -48,7 +48,12 @@ Types: `contracts/payment-processing-contract/src/types.rs`
    by the payer. Once cancelled, further `process_subscription_payment` calls
    fail with `SubscriptionNotActive`.
 
-## Off-chain scheduler requirements
+## Scheduler Requirements
+
+**The contract does not charge subscriptions on its own.** Soroban has no
+timers, so recurring payments only happen if an off-chain scheduler calls
+`process_subscription_payment` at each interval boundary. Without a running
+scheduler, subscriptions are created but never charged.
 
 A production deployment MUST run a scheduler process that:
 
@@ -66,6 +71,71 @@ A production deployment MUST run a scheduler process that:
   back-charge multiple missed periods, so the scheduler is responsible for
   deciding whether to catch up or skip missed cycles per its own billing
   policy.
+
+### Minimal Node.js cron example
+
+The scheduler must submit the call with the payer's authorization attached.
+The example below polls active subscriptions and charges each one whose
+interval has elapsed, using `node-cron` for the timer:
+
+```js
+const cron = require("node-cron");
+const { Contract, Keypair, TransactionBuilder, Networks, rpc } = require("@stellar/stellar-sdk");
+
+const server = new rpc.Server(process.env.SOROBAN_RPC_URL);
+const contract = new Contract(process.env.CONTRACT_ID);
+const payerKeypair = Keypair.fromSecret(process.env.PAYER_SECRET); // payer-operated bot
+
+async function charge(subscriptionId) {
+  const account = await server.getAccount(payerKeypair.publicKey());
+  const tx = new TransactionBuilder(account, {
+    fee: "1000000",
+    networkPassphrase: Networks.TESTNET,
+  })
+    .addOperation(contract.call("process_subscription_payment", payerKeypair.publicKey(), subscriptionId))
+    .setTimeout(30)
+    .build();
+
+  tx.sign(payerKeypair); // payer authorization
+  const prepared = await server.prepareTransaction(tx);
+  prepared.sign(payerKeypair);
+  return server.sendTransaction(prepared);
+}
+
+// Run every minute; the contract enforces the real interval.
+cron.schedule("* * * * *", async () => {
+  for (const subscriptionId of await listActiveSubscriptions()) {
+    try {
+      await charge(subscriptionId);
+    } catch (err) {
+      if (String(err).includes("SubscriptionIntervalNotElapsed")) {
+        // Not due yet — safe to retry on the next tick.
+        continue;
+      }
+      if (String(err).includes("SubscriptionNotActive")) {
+        // Payer cancelled — stop scheduling this subscription.
+        await markCancelled(subscriptionId);
+        continue;
+      }
+      console.error(`charge failed for ${subscriptionId}`, err);
+    }
+  }
+});
+```
+
+`listActiveSubscriptions()` / `markCancelled()` are application-specific: read
+active subscriptions via `get_subscription` or the merchant subscription
+listing and persist their state in your own database.
+
+### `SubscriptionIntervalNotElapsed`
+
+`process_subscription_payment` fails with `SubscriptionIntervalNotElapsed`
+when `now < last_charged_at + plan.interval` (the first charge, with
+`last_charged_at == 0`, is always allowed). For the scheduler this is a
+**normal, expected outcome**, not an error condition: it means the
+subscription is not yet due. The scheduler should treat it as safe to retry
+later (e.g. on the next cron tick) and must not mark the subscription as
+failed or alert on it.
 
 There is currently no reference scheduler implementation in this repository;
 the off-chain indexer service (`indexer/`) is a reasonable place to add one in
