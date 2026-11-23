@@ -14,6 +14,13 @@ contract itself only enforces correctness (duplicate-ID checks, interval
 guards, authorization, status transitions); it never initiates a charge on
 its own.
 
+> **Design rationale:** the key architectural decisions behind this feature —
+> why scheduling is off-chain, the subscription ID format, interval
+> enforcement via the ledger timestamp, the cancellation-only lifecycle (no
+> pause), and the enforced limits — are recorded in
+> [ADR-0007: Subscription Payment Model](adr/0007-subscription-payment-model.md).
+> Read it before changing subscription behaviour.
+
 Implementation: `contracts/payment-processing-contract/src/lib.rs`
 - `create_subscription` (lib.rs:1752)
 - `cancel_subscription` (lib.rs:1802)
