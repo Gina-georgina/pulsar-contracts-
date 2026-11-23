@@ -105,6 +105,22 @@ fn admins(env: &Env, admin: &Address) -> Vec<Address> {
     vec![env, admin.clone()]
 }
 
+/// SC-050: Collect all `payment_archived` events emitted after `start_index`,
+/// returning `(order_id, cleanup_timestamp)` for each one.
+fn payment_archived_events(env: &Env, start_index: usize) -> Vec<(Bytes, u64)> {
+    let topic = soroban_sdk::Symbol::new(env, "payment_archived");
+    let all = env.events().all();
+    let mut result = Vec::new(env);
+    for i in start_index..all.len() {
+        let (_contract, topics, data) = all.get(i).unwrap();
+        if topics.len() > 0 && topics.get(0).unwrap() == topic.clone().into() {
+            let (order_id, timestamp): (Bytes, u64) = data.try_into().unwrap();
+            result.push_back((order_id, timestamp));
+        }
+    }
+    result
+}
+
 // ── Admin tests ───────────────────────────────────────────────────────────────
 
 #[test]
@@ -1364,9 +1380,16 @@ fn test_set_cleanup_period_valid_is_persisted() {
     let (admin, _merchant, payer, _token) = setup_paid_order(&env, &client);
     client.set_payment_cleanup_period(&admins(&env, &admin), &1);
     env.ledger().with_mut(|l| l.timestamp = 100);
+    let before = env.events().all().len();
     let count = client.cleanup_expired_payments(&admins(&env, &admin));
     assert_eq!(count, 1);
     assert_eq!(client.try_get_payment_by_id(&payer, &bytes(&env, "ORDER_001")), Err(Ok(PaymentError::PaymentNotFound)));
+    // SC-050: one payment_archived event must be emitted for the deleted record.
+    let archived = payment_archived_events(&env, before);
+    assert_eq!(archived.len(), 1);
+    let (order_id, timestamp) = archived.get(0).unwrap();
+    assert_eq!(order_id, bytes(&env, "ORDER_001"));
+    assert_eq!(timestamp, 100);
 }
 
 #[test]
@@ -1377,10 +1400,22 @@ fn test_cleanup_expired_payments() {
     let order2 = PaymentOrder { order_id: bytes(&env, "ORDER_002"), merchant_address: merchant.clone(), payer: payer.clone(), token: token.clone(), amount: 500, description: str(&env, "desc"), expires_at: 0 };
     client.process_payment_with_signature(&payer, &order2, &zero_sig(&env), &zero_key(&env));
     env.ledger().with_mut(|l| l.timestamp = 7201);
+    let before = env.events().all().len();
     let count = client.cleanup_expired_payments(&admins(&env, &admin));
     assert_eq!(count, 2);
     assert_eq!(client.try_get_payment_by_id(&payer, &bytes(&env, "ORDER_001")), Err(Ok(PaymentError::PaymentNotFound)));
     assert_eq!(client.try_get_payment_by_id(&payer, &bytes(&env, "ORDER_002")), Err(Ok(PaymentError::PaymentNotFound)));
+    // SC-050: one payment_archived event per deleted record, each carrying the
+    // order_id and the cleanup timestamp (now = 7201).
+    let archived = payment_archived_events(&env, before);
+    assert_eq!(archived.len(), 2);
+    for (order_id, timestamp) in archived.iter() {
+        assert!(
+            *order_id == bytes(&env, "ORDER_001") || *order_id == bytes(&env, "ORDER_002"),
+            "unexpected order_id in payment_archived event"
+        );
+        assert_eq!(*timestamp, 7201);
+    }
 }
 
 /// T-012: Some expired, some not — only expired payments are removed.
@@ -1404,6 +1439,7 @@ fn test_cleanup_some_expired_leaves_recent() {
     };
     client.process_payment_with_signature(&payer, &order_recent, &zero_sig(&env), &zero_key(&env));
     // Only ORDER_001 was created before the cutoff; ORDER_RECENT was just created
+    let before = env.events().all().len();
     let count = client.cleanup_expired_payments(&admins(&env, &admin));
     assert_eq!(count, 1);
     // ORDER_001 should be gone
@@ -1414,6 +1450,12 @@ fn test_cleanup_some_expired_leaves_recent() {
     // ORDER_RECENT should still exist
     let recent = client.get_payment_by_id(&payer, &bytes(&env, "ORDER_RECENT"));
     assert_eq!(recent.amount, 200);
+    // SC-050: exactly one payment_archived event, for ORDER_001 only.
+    let archived = payment_archived_events(&env, before);
+    assert_eq!(archived.len(), 1);
+    let (order_id, timestamp) = archived.get(0).unwrap();
+    assert_eq!(order_id, bytes(&env, "ORDER_001"));
+    assert_eq!(timestamp, 7201);
 }
 
 #[test]

@@ -61,6 +61,61 @@ async function saveEvent(event) {
   );
 }
 
+// Minimal DDL for the payments table used by the soft-delete path below.
+async function ensurePaymentsTable() {
+  await db.query(
+    `CREATE TABLE IF NOT EXISTS payments (
+       order_id TEXT PRIMARY KEY,
+       archived BOOLEAN NOT NULL DEFAULT false,
+       archived_at TIMESTAMPTZ
+     )`
+  );
+}
+
+// Extract the order_id from a payment_archived event value. The value may be a
+// plain string, a base64-encoded ScVal, or an object/array containing order_id.
+function extractOrderId(value) {
+  if (value == null) return null;
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      if (parsed && typeof parsed === 'object') return extractOrderId(parsed);
+    } catch (_) {
+      // not JSON; fall through to treat as raw order id
+    }
+    return value;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const id = extractOrderId(item);
+      if (id != null) return id;
+    }
+    return null;
+  }
+  if (typeof value === 'object') {
+    if (value.order_id != null) return String(value.order_id);
+    if (value.orderId != null) return String(value.orderId);
+    for (const key of Object.keys(value)) {
+      const id = extractOrderId(value[key]);
+      if (id != null) return id;
+    }
+  }
+  return null;
+}
+
+async function handlePaymentArchived(event) {
+  const orderId = extractOrderId(event.value);
+  if (orderId == null) {
+    console.warn('payment_archived event missing order_id', event.txHash);
+    return;
+  }
+  const archivedAt = new Date();
+  await db.query(
+    `UPDATE payments SET archived = true, archived_at = $2 WHERE order_id = $1`,
+    [orderId, archivedAt]
+  );
+}
+
 async function poll() {
   const server = new SorobanRpc.Server(HORIZON_URL);
   const startLedger = (await getLastIndexedLedger()) + 1;
@@ -75,14 +130,21 @@ async function poll() {
     });
 
     for (const event of response.events) {
-      await saveEvent({
+      const topics = event.topic.map(t => t.toString());
+      const type = event.topic[0]?.toString() ?? 'unknown';
+      const saved = {
         ledger: event.ledger,
         txHash: event.txHash,
         contractId: event.contractId,
-        type: event.topic[0]?.toString() ?? 'unknown',
-        topic: event.topic.map(t => t.toString()),
+        type,
+        topic: topics,
         value: event.value,
-      });
+      };
+      await saveEvent(saved);
+
+      if (type === 'payment_archived' || topics.includes('payment_archived')) {
+        await handlePaymentArchived(saved);
+      }
     }
 
     if (response.events.length) {
@@ -95,4 +157,6 @@ async function poll() {
   setTimeout(poll, 6000); // poll every ~1 ledger close
 }
 
-poll();
+ensurePaymentsTable()
+  .catch(err => console.error('Failed to ensure payments table:', err.message))
+  .finally(() => poll());

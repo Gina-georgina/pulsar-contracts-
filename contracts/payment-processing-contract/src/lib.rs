@@ -1299,6 +1299,10 @@ impl PaymentContract {
             if let Some(record) = storage::get_payment(&env, &id) {
                 if record.paid_at < cutoff {
                     storage::remove_payment(&env, &id);
+                    env.events().publish(
+                        (String::from_str(&env, "payment_archived"),),
+                        (id.clone(), now),
+                    );
                     count += 1;
                 } else {
                     new_ids.push_back(id);
