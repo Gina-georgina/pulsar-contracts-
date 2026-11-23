@@ -5,6 +5,11 @@ services:
   stellar-local:
     image: stellar/quickstart:latest
     container_name: pulsar-stellar-local
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
     ports:
       - "8000:8000"   # Horizon API
       - "11625:11625" # Stellar Core peer port
@@ -23,6 +28,11 @@ services:
       context: .
       dockerfile: Dockerfile.dev
     container_name: pulsar-dev
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
     volumes:
       - .:/workspace
       - cargo-cache:/usr/local/cargo/registry

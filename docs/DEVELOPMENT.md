@@ -9,6 +9,7 @@ This guide provides instructions for setting up a development environment and wo
 - [Building](#building)
 - [Testing](#testing)
 - [Local Network](#local-network)
+- [Container Resource Limits](#container-resource-limits)
 - [Environment Seeding](#environment-seeding)
 - [Debugging](#debugging)
 - [Common Tasks](#common-tasks)
@@ -157,6 +158,67 @@ stellar network container restart local
 ```bash
 stellar network container logs local
 ```
+
+## Container Resource Limits
+
+Every service in `docker-compose.yml` declares `deploy.resources.limits` for both
+memory and CPU. Without limits, a single misbehaving container — for example the
+monitoring poll loop during an RPC error storm — can consume all available host
+resources and starve its sibling containers (and the host itself).
+
+### Default Limits
+
+The defaults are intentionally conservative so the whole stack fits comfortably
+on a developer laptop:
+
+| Resource | Limit per service |
+| -------- | ----------------- |
+| Memory   | `256M`            |
+| CPU      | `0.5`             |
+
+```yaml
+services:
+  monitoring:
+    # ...
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.5"
+```
+
+### Raising Limits
+
+If a service legitimately needs more headroom (e.g. a large seeding run or a
+debugger attached to a container), raise the limits in one of two ways.
+
+**1. Edit `docker-compose.yml` directly** — change the `memory` / `cpus` values
+under that service's `deploy.resources.limits` block.
+
+**2. Use a `docker-compose.override.yml`** — preferred for local, uncommitted
+tweaks. Compose automatically merges this file with `docker-compose.yml`:
+
+```yaml
+# docker-compose.override.yml
+services:
+  monitoring:
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
+```
+
+### Verifying Limits
+
+Confirm the merged configuration before starting the stack:
+
+```bash
+docker compose config
+```
+
+The output shows the effective `deploy.resources.limits` for each service. After
+`docker compose up`, you can also check live usage with `docker stats`.
 
 ## Environment Seeding
 
