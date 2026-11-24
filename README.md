@@ -970,6 +970,11 @@ Client → API Gateway (rate limit: N req/min per account) → Stellar RPC → C
 
 A simple token-bucket or sliding-window limiter keyed on the caller's Stellar address is sufficient. Libraries such as `express-rate-limit` (Node.js) or `slowapi` (Python) can be used for this purpose.
 
+
+## Roadmap
+
+See [ROADMAP.md](ROADMAP.md) for planned features, priorities, and release milestones (v0.1, v0.2, v1.0).
+
 ## Known Limitations
 
 ### `get_global_payment_stats` — date filtering is a no-op (SC-003)
