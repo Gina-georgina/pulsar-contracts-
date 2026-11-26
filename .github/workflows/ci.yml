@@ -7,6 +7,8 @@ on:
     branches: [main, develop]
   schedule:
     - cron: '0 6 * * 1'  # Weekly on Monday at 06:00 UTC
+    - cron: '0 3 * * *'  # Nightly at 03:00 UTC — fuzz run (T-023)
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -19,6 +21,9 @@ env:
   # Note: `cargo fmt` and `cargo audit` do not accept --locked; fmt operates
   # on source files only and audit reads the lock file directly.
   CARGO_INCREMENTAL: 0
+  # T-027: Minimum line coverage (percent) enforced by the `coverage` job.
+  # Adjust this value to change the threshold without editing workflow logic.
+  COVERAGE_THRESHOLD: 80
 
 jobs:
   test:
@@ -87,6 +92,69 @@ jobs:
       - name: Run tests
         run: cargo test --all-features --locked
         working-directory: contracts/payment-processing-contract
+
+  # DO-031: Run the Node.js / TypeScript package test suites. This job runs in
+  # parallel with the Rust `test` job (no `needs` dependency) and fails if any
+  # package's test suite fails (no continue-on-error).
+  node-tests:
+    name: Node Tests (${{ matrix.package }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        package:
+          - indexer
+          - monitoring
+          - services/webhook
+          - services/analytics-service
+          - sdk
+          - frontend
+          - api
+          - dashboard
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: ${{ matrix.package }}/package-lock.json
+
+      - name: Install dependencies
+        working-directory: ${{ matrix.package }}
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            echo "::warning::No package-lock.json in ${{ matrix.package }}; falling back to npm install."
+            npm install
+          fi
+
+      - name: Run tests
+        working-directory: ${{ matrix.package }}
+        run: npm test
+
+      - name: Write test summary
+        if: always()
+        run: |
+          echo "## Node Tests — ${{ matrix.package }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Field | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-------|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Package | \`${{ matrix.package }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Node version | 20 |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Status | ${{ job.status }} |" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage report as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: node-coverage-${{ matrix.package }}
+          path: |
+            ${{ matrix.package }}/coverage/
+            ${{ matrix.package }}/lcov.info
+          if-no-files-found: ignore
+          retention-days: 30
 
   # T-011: Property-based tests — run as a separate CI job so failures are
   # surfaced independently of the main unit-test suite.
@@ -283,25 +351,91 @@ jobs:
           path: contracts/payment-processing-contract/lcov.info
           retention-days: 30
 
-      - name: Check minimum line coverage (80% — warning only)
+      - name: Check minimum line coverage (enforced)
         run: |
+          THRESHOLD="${COVERAGE_THRESHOLD:-80}"
           COVERAGE=$(cargo llvm-cov --all-features --locked --summary-only 2>&1 \
             | grep -E '^TOTAL' | awk '{print $10}' | tr -d '%')
-          echo "Line coverage: ${COVERAGE}%"
+          echo "Line coverage: ${COVERAGE}% (threshold: ${THRESHOLD}%)"
           # Write coverage summary to GitHub Step Summary
           echo "## Coverage Report" >> "$GITHUB_STEP_SUMMARY"
           echo "| Metric | Value |" >> "$GITHUB_STEP_SUMMARY"
           echo "|--------|-------|" >> "$GITHUB_STEP_SUMMARY"
           echo "| Line Coverage | ${COVERAGE}% |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Threshold | 80% (warning only) |" >> "$GITHUB_STEP_SUMMARY"
-          if [ -n "$COVERAGE" ] && [ "$(echo "$COVERAGE < 80" | bc -l)" = "1" ]; then
-            echo "| Status | ⚠️ Below threshold |" >> "$GITHUB_STEP_SUMMARY"
-            echo "::warning::Line coverage ${COVERAGE}% is below the 80% threshold. Please add tests."
+          echo "| Threshold | ${THRESHOLD}% (enforced) |" >> "$GITHUB_STEP_SUMMARY"
+          if [ -z "$COVERAGE" ]; then
+            echo "| Status | ❌ Could not determine coverage |" >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::Could not determine line coverage from cargo llvm-cov output."
+            exit 1
+          fi
+          if [ "$(echo "$COVERAGE < $THRESHOLD" | bc -l)" = "1" ]; then
+            echo "| Status | ❌ Below threshold |" >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::Line coverage ${COVERAGE}% is below the ${THRESHOLD}% threshold. Please add tests."
+            exit 1
           else
             echo "| Status | ✅ Threshold met |" >> "$GITHUB_STEP_SUMMARY"
-            echo "Coverage threshold met: ${COVERAGE}%"
+            echo "Coverage threshold met: ${COVERAGE}% >= ${THRESHOLD}%"
           fi
         working-directory: contracts/payment-processing-contract
+
+  # DO-028: Build the production Docker image and scan it for known OS and
+  # dependency vulnerabilities with Trivy. The job fails on any CRITICAL
+  # finding (exit-code 1) and uploads the full report as an artifact. It runs
+  # on push/PR and also on the weekly schedule (see `on.schedule` above), so
+  # newly disclosed CVEs in the base image are caught independently of PRs.
+  container-scan:
+    name: Container Image Scan (Trivy)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write  # required to upload SARIF results
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build production Docker image
+        run: |
+          docker build -t payment-processing-contract:${{ github.sha }} .
+
+      - name: Run Trivy vulnerability scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: payment-processing-contract:${{ github.sha }}
+          format: table
+          output: trivy-report.txt
+          severity: CRITICAL
+          ignore-unfixed: false
+          exit-code: '1'
+
+      - name: Run Trivy scan (SARIF for code scanning)
+        # Runs after the gating scan above; `if: always()` ensures the SARIF
+        # report is produced even when the gating scan failed on CRITICAL
+        # findings, so results are still visible in the Security tab.
+        if: always()
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: payment-processing-contract:${{ github.sha }}
+          format: sarif
+          output: trivy-results.sarif
+          severity: CRITICAL
+          ignore-unfixed: false
+          exit-code: '0'
+
+      - name: Upload Trivy scan report as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-report
+          path: |
+            trivy-report.txt
+            trivy-results.sarif
+          retention-days: 30
+
+      - name: Upload SARIF to GitHub code scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy-container
 
   security-audit:
     name: Security Audit
@@ -348,6 +482,59 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check
+
+  # DO-032: Lint and type-check all Node.js/TypeScript packages. Clippy only
+  # covers the Rust contract; this job keeps the frontend, dashboard, services
+  # and SDK free of lint and type errors. Any non-zero exit fails the job.
+  lint:
+    name: Lint & Typecheck (Node.js/TypeScript)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # package path, whether it is a TypeScript package (needs tsc --noEmit)
+          - package: frontend
+            typescript: true
+          - package: dashboard
+            typescript: false
+          - package: api
+            typescript: false
+          - package: indexer
+            typescript: false
+          - package: monitoring
+            typescript: false
+          - package: sdk
+            typescript: true
+          - package: services/analytics-service
+            typescript: true
+          - package: services/webhook
+            typescript: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies (${{ matrix.package }})
+        working-directory: ${{ matrix.package }}
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: ESLint (${{ matrix.package }})
+        working-directory: ${{ matrix.package }}
+        run: npx --no-install eslint .
+
+      - name: TypeScript strict check (${{ matrix.package }})
+        if: matrix.typescript
+        working-directory: ${{ matrix.package }}
+        run: npx --no-install tsc --noEmit
 
   # MISC-014: errors.ts / error-registry.json are generated from error.rs by
   # sdk/scripts/generate-errors.js. Fail CI if the committed files have
@@ -418,6 +605,43 @@ jobs:
           echo "| Triggered by | \`${{ github.sha }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Workflow run | [${{ github.run_id }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |" >> "$GITHUB_STEP_SUMMARY"
 
+  # DO-022: Build the multi-stage production Dockerfile and scan the resulting
+  # image for HIGH/CRITICAL vulnerabilities with Trivy. The runtime image must
+  # contain only the compiled binary and config — no cargo/npm toolchains.
+  docker-image:
+    name: Build & Scan Production Image
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build production image
+        run: docker build -t pulsar-contract:ci .
+
+      - name: Verify no dev toolchains in runtime image
+        run: |
+          set -euo pipefail
+          for tool in cargo rustc npm node; do
+            if docker run --rm --entrypoint sh pulsar-contract:ci -c "command -v $tool" >/dev/null 2>&1; then
+              echo "::error::$tool found in production image — dev dependencies must not be present."
+              exit 1
+            fi
+          done
+          echo "No dev toolchains present in the production image."
+
+      - name: Scan image with Trivy
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: pulsar-contract:ci
+          format: table
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+
   smoke-test:
     name: Smoke Test (Testnet)
     runs-on: ubuntu-latest
@@ -431,12 +655,60 @@ jobs:
           curl -sSL https://github.com/stellar/stellar-cli/releases/latest/download/stellar-cli-x86_64-unknown-linux-gnu.tar.gz \
             | tar -xz -C /usr/local/bin stellar
 
+      # DO-026: end-to-end payment flow — register merchant → process payment
+      # → query payment → verify status. The script exits non-zero on any
+      # failed step and prints per-step timing.
       - name: Run smoke test
         env:
           CONTRACT_ID: ${{ needs.deploy-testnet.outputs.contract_id }}
           ADMIN_SECRET: ${{ secrets.TESTNET_SECRET_KEY }}
           NETWORK: testnet
         run: bash scripts/smoke-test.sh
+
+  # DOC-013: Generate the API reference from JSDoc/TSDoc comments and publish
+  # it to GitHub Pages on every push to main. The docs are built with the
+  # root `docs:generate` script (see package.json) and deployed as a Pages
+  # artifact using the official GitHub Pages actions.
+  docs:
+    name: Generate & Publish API Docs
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate API reference
+        run: npm run docs:generate
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/api
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
 
   # SEC-008: Scheduled weekly job that refreshes the cargo-audit advisory
   # database and re-runs the audit so that newly published advisories are
