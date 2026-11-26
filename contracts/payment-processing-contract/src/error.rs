@@ -70,9 +70,10 @@ pub enum PaymentError {
     /// tokens with `add_allowed_token` before processing payments.
     TokenNotAllowed = 71,
 
-    // Refund window configuration (SC-055)
-    /// The supplied refund window or grace buffer is outside the allowed
-    /// bounds (e.g. zero window, or grace buffer exceeding the window).
-    /// See `set_refund_window` for the enforced limits.
-    InvalidRefundWindow = 72,
+    // Feature flags (MISC-034)
+    /// The feature flag gating this function is disabled.
+    /// The admin can enable it at runtime with `set_feature_flag`; the flag
+    /// name is reported in the error context (e.g. `subscriptions_enabled`,
+    /// `token_allowlist_enforced`). See `docs/FEATURE_FLAGS.md`.
+    FeatureFlagDisabled = 72,
 }

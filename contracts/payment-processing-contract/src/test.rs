@@ -203,6 +203,136 @@ fn test_upgrade_non_admin_fails() {
     );
 }
 
+// ── SC-054: contract version bump on upgrade ─────────────────────────────────
+
+/// SC-054: upgrade_contract() must bump the stored contract version by one.
+#[test]
+fn test_upgrade_contract_bumps_version() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    client.set_admin(&admins(&env, &admin), &1);
+    assert_eq!(client.get_version(), 1);
+
+    let new_wasm_hash = BytesN::from_array(&env, &[7u8; 32]);
+    client.upgrade_contract(&admins(&env, &admin), &new_wasm_hash);
+
+    assert_eq!(client.get_version(), 2);
+}
+
+/// SC-054: repeated upgrades must keep incrementing the version.
+#[test]
+fn test_upgrade_contract_bumps_version_repeatedly() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    client.set_admin(&admins(&env, &admin), &1);
+
+    let hash_a = BytesN::from_array(&env, &[1u8; 32]);
+    let hash_b = BytesN::from_array(&env, &[2u8; 32]);
+    client.upgrade_contract(&admins(&env, &admin), &hash_a);
+    assert_eq!(client.get_version(), 2);
+    client.upgrade_contract(&admins(&env, &admin), &hash_b);
+    assert_eq!(client.get_version(), 3);
+}
+
+/// SC-054: upgrade_contract() must emit a contract_upgraded event carrying the
+/// old and new version numbers.
+#[test]
+fn test_upgrade_contract_emits_event_with_versions() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    client.set_admin(&admins(&env, &admin), &1);
+
+    let before = env.events().all().len();
+    let new_wasm_hash = BytesN::from_array(&env, &[3u8; 32]);
+    client.upgrade_contract(&admins(&env, &admin), &new_wasm_hash);
+
+    let events = env.events().all();
+    assert!(
+        events.len() > before,
+        "contract_upgraded event must be emitted"
+    );
+
+    // The most recent event must carry (old_version, new_version) = (1, 2).
+    let (_, _, data) = events.get(events.len() - 1).unwrap();
+    let (old_version, new_version): (u32, u32) = data.try_into_val(&env).unwrap();
+    assert_eq!(old_version, 1);
+    assert_eq!(new_version, 2);
+}
+
+/// SC-054: upgrade_contract() must be admin-only.
+#[test]
+fn test_upgrade_contract_non_admin_fails() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let non_admin = Address::generate(&env);
+    client.set_admin(&admins(&env, &admin), &1);
+
+    let new_wasm_hash = BytesN::from_array(&env, &[4u8; 32]);
+    assert_eq!(
+        client.try_upgrade_contract(&admins(&env, &non_admin), &new_wasm_hash),
+        Err(Ok(PaymentError::Unauthorized))
+    );
+    // Version must be unchanged after a rejected upgrade.
+    assert_eq!(client.get_version(), 1);
+}
+
+/// SC-054: set_contract_version() must let the admin set an explicit version
+/// (used after a manual upgrade) and emit the contract_upgraded event.
+#[test]
+fn test_set_contract_version_success() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    client.set_admin(&admins(&env, &admin), &1);
+
+    let before = env.events().all().len();
+    client.set_contract_version(&admins(&env, &admin), &5);
+    assert_eq!(client.get_version(), 5);
+
+    let events = env.events().all();
+    assert!(
+        events.len() > before,
+        "contract_upgraded event must be emitted"
+    );
+    let (_, _, data) = events.get(events.len() - 1).unwrap();
+    let (old_version, new_version): (u32, u32) = data.try_into_val(&env).unwrap();
+    assert_eq!(old_version, 1);
+    assert_eq!(new_version, 5);
+}
+
+/// SC-054: set_contract_version() must reject a version that does not move
+/// forward, preventing accidental downgrades.
+#[test]
+fn test_set_contract_version_must_increase() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    client.set_admin(&admins(&env, &admin), &1);
+
+    assert_eq!(
+        client.try_set_contract_version(&admins(&env, &admin), &1),
+        Err(Ok(PaymentError::InvalidInput))
+    );
+    assert_eq!(
+        client.try_set_contract_version(&admins(&env, &admin), &0),
+        Err(Ok(PaymentError::InvalidInput))
+    );
+    assert_eq!(client.get_version(), 1);
+}
+
+/// SC-054: set_contract_version() must be admin-only.
+#[test]
+fn test_set_contract_version_non_admin_fails() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let non_admin = Address::generate(&env);
+    client.set_admin(&admins(&env, &admin), &1);
+
+    assert_eq!(
+        client.try_set_contract_version(&admins(&env, &non_admin), &2),
+        Err(Ok(PaymentError::Unauthorized))
+    );
+    assert_eq!(client.get_version(), 1);
+}
+
 #[test]
 fn test_ping() {
     let (env, client) = setup();
@@ -1765,6 +1895,101 @@ fn test_dispute_refund_unauthorized_fails() {
     assert_eq!(result, Err(Ok(PaymentError::DisputeUnauthorized)));
 }
 
+// ── T-021: full lifecycle integration test ────────────────────────────────────
+
+/// T-021: End-to-end lifecycle covering merchant registration → payment →
+/// refund initiation → merchant rejection → payer dispute → admin resolution.
+/// Intermediate state is asserted after every step via `get_payment_by_id` and
+/// `get_refund`.
+#[test]
+fn test_full_payment_refund_dispute_lifecycle() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let merchant = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let token = create_token(&env, &admin);
+
+    client.set_admin(&admins(&env, &admin), &1);
+
+    // 1. Register merchant.
+    client.register_merchant(
+        &merchant,
+        &str(&env, "Lifecycle Store"),
+        &str(&env, "desc"),
+        &str(&env, "lifecycle@store.com"),
+        &MerchantCategory::Retail,
+        &None,
+    );
+    let m = client.get_merchant(&merchant);
+    assert!(m.active);
+    assert_eq!(m.name, str(&env, "Lifecycle Store"));
+
+    // 2. Process payment.
+    mint(&env, &token, &payer, 5000);
+    let order = make_order(&env, &merchant, &payer, &token);
+    let (_pk, sig) = sign_order(&env, &order);
+    client.process_payment_with_signature(&payer, &order, &sig, &zero_key(&env));
+
+    let record = client.get_payment_by_id(&payer, &bytes(&env, "ORDER_001"));
+    assert_eq!(record.status, PaymentStatus::Completed);
+    assert_eq!(record.amount, 1000);
+    assert_eq!(record.refunded_amount, 0);
+    assert_eq!(record.pending_refund_amount, 0);
+
+    // 3. Initiate refund.
+    let refund_id = bytes(&env, "REFUND_LIFECYCLE");
+    client.initiate_refund(
+        &payer,
+        &refund_id,
+        &bytes(&env, "ORDER_001"),
+        &500,
+        &str(&env, "Customer request"),
+    );
+
+    let refund = client.get_refund(&refund_id);
+    assert_eq!(refund.status, RefundStatus::Pending);
+    assert_eq!(refund.amount, 500);
+    assert_eq!(refund.order_id, bytes(&env, "ORDER_001"));
+
+    let record = client.get_payment_by_id(&payer, &bytes(&env, "ORDER_001"));
+    assert_eq!(record.status, PaymentStatus::Completed);
+    assert_eq!(record.refunded_amount, 0);
+    assert_eq!(record.pending_refund_amount, 500);
+
+    // 4. Merchant rejects the refund.
+    client.reject_refund(&merchant, &refund_id, &None);
+
+    let refund = client.get_refund(&refund_id);
+    assert_eq!(refund.status, RefundStatus::Rejected);
+
+    let record = client.get_payment_by_id(&payer, &bytes(&env, "ORDER_001"));
+    assert_eq!(record.status, PaymentStatus::Completed);
+    assert_eq!(record.refunded_amount, 0);
+    assert_eq!(record.pending_refund_amount, 0);
+
+    // 5. Payer disputes the rejection.
+    client.dispute_refund(&payer, &refund_id, &str(&env, "Merchant refused valid refund"));
+
+    let refund = client.get_refund(&refund_id);
+    assert_eq!(refund.status, RefundStatus::Disputed);
+
+    let record = client.get_payment_by_id(&payer, &bytes(&env, "ORDER_001"));
+    assert_eq!(record.status, PaymentStatus::Completed);
+    assert_eq!(record.refunded_amount, 0);
+    assert_eq!(record.pending_refund_amount, 0);
+
+    // 6. Admin resolves the dispute in the payer's favour.
+    client.resolve_dispute(&admins(&env, &admin), &refund_id, &true);
+
+    let refund = client.get_refund(&refund_id);
+    assert_eq!(refund.status, RefundStatus::Completed);
+
+    let record = client.get_payment_by_id(&payer, &bytes(&env, "ORDER_001"));
+    assert_eq!(record.status, PaymentStatus::PartiallyRefunded);
+    assert_eq!(record.refunded_amount, 500);
+    assert_eq!(record.pending_refund_amount, 0);
+}
+
 // ── Multisig tests ────────────────────────────────────────────────────────────
 
 #[test]
@@ -2086,8 +2311,10 @@ fn test_cancel_subscription_wrong_payer_fails() {
     );
 }
 
+/// SC-037: Cancelling a subscription that has already been cancelled must be
+/// rejected with `SubscriptionNotActive` (idempotency guard).
 #[test]
-fn test_cancel_already_cancelled_fails() {
+fn test_cancel_already_cancelled_subscription_fails() {
     let (env, client) = setup();
     let admin = Address::generate(&env);
     let merchant = Address::generate(&env);
@@ -2097,7 +2324,10 @@ fn test_cancel_already_cancelled_fails() {
     client.register_merchant(&merchant, &str(&env, "Store"), &str(&env, "desc"), &str(&env, "c@c.com"), &MerchantCategory::Retail, &None);
     let sub_id = bytes(&env, "SUB_001");
     client.create_subscription(&payer, &merchant, &sub_id, &make_plan(&env, &token));
+    // First cancellation succeeds.
     client.cancel_subscription(&payer, &sub_id);
+    assert_eq!(client.get_subscription(&sub_id).status, crate::types::SubscriptionStatus::Cancelled);
+    // Second cancellation must fail with SubscriptionNotActive.
     assert_eq!(
         client.try_cancel_subscription(&payer, &sub_id),
         Err(Ok(PaymentError::SubscriptionNotActive))
@@ -2383,6 +2613,79 @@ fn test_get_subscription_not_found_fails() {
     );
 }
 
+/// SC-038: process_subscription_payment must enforce the token allowlist.
+/// A subscription created with a token that is not on the allowlist must be
+/// rejected at charge time, mirroring process_payment_with_signature.
+#[test]
+fn test_process_subscription_payment_non_allowlisted_token_fails() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let merchant = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let allowed_token = create_token(&env, &admin);
+    let blocked_token = create_token(&env, &admin);
+
+    client.set_admin(&admins(&env, &admin), &1);
+    client.register_merchant(
+        &merchant,
+        &str(&env, "Store"),
+        &str(&env, "desc"),
+        &str(&env, "c@c.com"),
+        &MerchantCategory::Retail,
+        &None,
+    );
+    mint(&env, &blocked_token, &payer, 5000);
+
+    // Enable the allowlist and only allow `allowed_token`.
+    client.set_token_allowlist_mode(&admins(&env, &admin), &true);
+    client.add_token_to_allowlist(&admins(&env, &admin), &allowed_token);
+
+    let sub_id = bytes(&env, "SUB_BLOCKED");
+    client.create_subscription(&payer, &merchant, &sub_id, &make_plan(&env, &blocked_token));
+
+    env.ledger().with_mut(|l| l.timestamp = 1000);
+    assert_eq!(
+        client.try_process_subscription_payment(&payer, &sub_id),
+        Err(Ok(PaymentError::TokenNotAllowed))
+    );
+}
+
+/// SC-042: a merchant cannot accumulate more than MAX_SUBSCRIPTIONS_PER_MERCHANT
+/// subscriptions; the next create_subscription must return InvalidInput.
+#[test]
+fn test_create_subscription_per_merchant_limit_enforced() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let merchant = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let token = create_token(&env, &admin);
+
+    client.set_admin(&admins(&env, &admin), &1);
+    client.register_merchant(
+        &merchant,
+        &str(&env, "Store"),
+        &str(&env, "desc"),
+        &str(&env, "c@c.com"),
+        &MerchantCategory::Retail,
+        &None,
+    );
+
+    let plan = make_plan(&env, &token);
+    for i in 0..crate::MAX_SUBSCRIPTIONS_PER_MERCHANT {
+        let sub_id = Bytes::from_slice(&env, alloc::format!("SUB_{:05}", i).as_bytes());
+        client.create_subscription(&payer, &merchant, &sub_id, &plan);
+    }
+
+    let overflow_id = Bytes::from_slice(
+        &env,
+        alloc::format!("SUB_{:05}", crate::MAX_SUBSCRIPTIONS_PER_MERCHANT).as_bytes(),
+    );
+    assert_eq!(
+        client.try_create_subscription(&payer, &merchant, &overflow_id, &plan),
+        Err(Ok(PaymentError::InvalidInput))
+    );
+}
+
 // ── T-020: inactive merchant payment ─────────────────────────────────────────
 
 #[test]
@@ -2445,6 +2748,167 @@ fn test_max_pending_refunds_per_order() {
     assert_eq!(result, Err(Ok(PaymentError::InvalidInput)));
 }
 
+
+// ── Feature flag tests ────────────────────────────────────────────────────────
+
+/// Flags default to disabled when never set by the admin.
+#[test]
+fn test_feature_flags_default_to_disabled() {
+    let (env, client) = setup();
+    assert!(!client.is_feature_enabled(&str(&env, "subscriptions_enabled")));
+    assert!(!client.is_feature_enabled(&str(&env, "token_allowlist_enforced")));
+    // Unknown flags also default to disabled.
+    assert!(!client.is_feature_enabled(&str(&env, "some_unknown_flag")));
+}
+
+#[test]
+fn test_set_and_get_feature_flag() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    client.set_admin(&admins(&env, &admin), &1);
+
+    client.set_feature_flag(&admins(&env, &admin), &str(&env, "subscriptions_enabled"), &true);
+    assert!(client.is_feature_enabled(&str(&env, "subscriptions_enabled")));
+
+    client.set_feature_flag(&admins(&env, &admin), &str(&env, "subscriptions_enabled"), &false);
+    assert!(!client.is_feature_enabled(&str(&env, "subscriptions_enabled")));
+}
+
+#[test]
+fn test_set_feature_flag_non_admin_fails() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let non_admin = Address::generate(&env);
+    client.set_admin(&admins(&env, &admin), &1);
+
+    assert_eq!(
+        client.try_set_feature_flag(&admins(&env, &non_admin), &str(&env, "subscriptions_enabled"), &true),
+        Err(Ok(PaymentError::Unauthorized))
+    );
+    assert!(!client.is_feature_enabled(&str(&env, "subscriptions_enabled")));
+}
+
+#[test]
+fn test_subscriptions_disabled_blocks_create_subscription() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let merchant = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let token = create_token(&env, &admin);
+    client.set_admin(&admins(&env, &admin), &1);
+    client.register_merchant(&merchant, &str(&env, "Store"), &str(&env, "desc"), &str(&env, "c@c.com"), &MerchantCategory::Retail, &None);
+
+    // Flag unset → subscriptions disabled by default.
+    assert_eq!(
+        client.try_create_subscription(&payer, &merchant, &bytes(&env, "SUB_001"), &make_plan(&env, &token)),
+        Err(Ok(PaymentError::FeatureFlagDisabled))
+    );
+}
+
+#[test]
+fn test_subscriptions_enabled_allows_create_subscription() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let merchant = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let token = create_token(&env, &admin);
+    client.set_admin(&admins(&env, &admin), &1);
+    client.register_merchant(&merchant, &str(&env, "Store"), &str(&env, "desc"), &str(&env, "c@c.com"), &MerchantCategory::Retail, &None);
+    client.set_feature_flag(&admins(&env, &admin), &str(&env, "subscriptions_enabled"), &true);
+
+    let sub_id = bytes(&env, "SUB_001");
+    client.create_subscription(&payer, &merchant, &sub_id, &make_plan(&env, &token));
+    assert_eq!(client.get_subscription(&sub_id).payer, payer);
+}
+
+#[test]
+fn test_subscriptions_disabled_blocks_process_subscription_payment() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let merchant = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let token = create_token(&env, &admin);
+    client.set_admin(&admins(&env, &admin), &1);
+    client.register_merchant(&merchant, &str(&env, "Store"), &str(&env, "desc"), &str(&env, "c@c.com"), &MerchantCategory::Retail, &None);
+    client.set_feature_flag(&admins(&env, &admin), &str(&env, "subscriptions_enabled"), &true);
+    mint(&env, &token, &payer, 5000);
+    let sub_id = bytes(&env, "SUB_001");
+    client.create_subscription(&payer, &merchant, &sub_id, &make_plan(&env, &token));
+
+    // Disable the flag after creation — processing must be blocked.
+    client.set_feature_flag(&admins(&env, &admin), &str(&env, "subscriptions_enabled"), &false);
+    assert_eq!(
+        client.try_process_subscription_payment(&payer, &sub_id),
+        Err(Ok(PaymentError::FeatureFlagDisabled))
+    );
+}
+
+#[test]
+fn test_token_allowlist_not_enforced_allows_any_token() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let merchant = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let token = create_token(&env, &admin);
+    client.set_admin(&admins(&env, &admin), &1);
+    client.register_merchant(&merchant, &str(&env, "Store"), &str(&env, "desc"), &str(&env, "c@c.com"), &MerchantCategory::Retail, &None);
+    mint(&env, &token, &payer, 5000);
+
+    // Flag unset → allowlist not enforced; an unlisted token is accepted.
+    assert!(!client.is_feature_enabled(&str(&env, "token_allowlist_enforced")));
+    let order = make_order(&env, &merchant, &payer, &token);
+    let (_pk, sig) = sign_order(&env, &order);
+    client.process_payment_with_signature(&payer, &order, &sig, &zero_key(&env));
+    assert_eq!(
+        client.get_payment_by_id(&payer, &bytes(&env, "ORDER_001")).status,
+        PaymentStatus::Completed
+    );
+}
+
+#[test]
+fn test_token_allowlist_enforced_blocks_unlisted_token() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let merchant = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let token = create_token(&env, &admin);
+    client.set_admin(&admins(&env, &admin), &1);
+    client.register_merchant(&merchant, &str(&env, "Store"), &str(&env, "desc"), &str(&env, "c@c.com"), &MerchantCategory::Retail, &None);
+    mint(&env, &token, &payer, 5000);
+
+    client.set_feature_flag(&admins(&env, &admin), &str(&env, "token_allowlist_enforced"), &true);
+    assert!(client.is_feature_enabled(&str(&env, "token_allowlist_enforced")));
+
+    let order = make_order(&env, &merchant, &payer, &token);
+    let (_pk, sig) = sign_order(&env, &order);
+    assert_eq!(
+        client.try_process_payment_with_signature(&payer, &order, &sig, &zero_key(&env)),
+        Err(Ok(PaymentError::TokenNotAllowed))
+    );
+}
+
+#[test]
+fn test_token_allowlist_enforced_allows_allowlisted_token() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let merchant = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let token = create_token(&env, &admin);
+    client.set_admin(&admins(&env, &admin), &1);
+    client.register_merchant(&merchant, &str(&env, "Store"), &str(&env, "desc"), &str(&env, "c@c.com"), &MerchantCategory::Retail, &None);
+    mint(&env, &token, &payer, 5000);
+
+    client.set_feature_flag(&admins(&env, &admin), &str(&env, "token_allowlist_enforced"), &true);
+    client.add_allowed_token(&admins(&env, &admin), &token);
+
+    let order = make_order(&env, &merchant, &payer, &token);
+    let (_pk, sig) = sign_order(&env, &order);
+    client.process_payment_with_signature(&payer, &order, &sig, &zero_key(&env));
+    assert_eq!(
+        client.get_payment_by_id(&payer, &bytes(&env, "ORDER_001")).status,
+        PaymentStatus::Completed
+    );
+}
 
 // ── Merchant stats tests ──────────────────────────────────────────────────────
 

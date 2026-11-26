@@ -33,10 +33,44 @@ async function apiFetch(path, { signal, method = "GET", body, baseUrl = DEFAULT_
 
   if (!response.ok) {
     const payload = await response.json().catch(() => ({}));
-    throw new ApiError(response.status, payload?.error?.code ?? "Unknown", payload?.error?.message ?? response.statusText);
+    const error = normalizeErrorPayload(payload, response);
+    throw new ApiError(response.status, error.code, error.message, error.requestId);
   }
 
   return response.json();
+}
+
+/**
+ * Normalizes an error payload into the standard { code, message, requestId } shape.
+ *
+ * Supports the standard format `{ error: { code, message, requestId? } }` as well as
+ * legacy formats (`{ error: "message" }`, `{ message: "..." }`, raw strings) so that
+ * existing services and clients remain compatible.
+ */
+function normalizeErrorPayload(payload, response) {
+  const fallbackMessage = response.statusText || `Request failed with status ${response.status}`;
+  const fallbackCode = "Unknown";
+
+  // Standard format: { error: { code, message, requestId? } }
+  if (payload && typeof payload === "object" && payload.error && typeof payload.error === "object") {
+    return {
+      code: payload.error.code ?? fallbackCode,
+      message: payload.error.message ?? fallbackMessage,
+      requestId: payload.error.requestId,
+    };
+  }
+
+  // Legacy format: { error: "message" }
+  if (payload && typeof payload === "object" && typeof payload.error === "string") {
+    return { code: fallbackCode, message: payload.error, requestId: undefined };
+  }
+
+  // Legacy format: { message: "..." }
+  if (payload && typeof payload === "object" && typeof payload.message === "string") {
+    return { code: fallbackCode, message: payload.message, requestId: undefined };
+  }
+
+  return { code: fallbackCode, message: fallbackMessage, requestId: undefined };
 }
 
 /**
@@ -112,10 +146,11 @@ export class CancelledError extends Error {
 }
 
 export class ApiError extends Error {
-  constructor(status, code, message) {
+  constructor(status, code, message, requestId) {
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.code = code;
+    this.requestId = requestId;
   }
 }

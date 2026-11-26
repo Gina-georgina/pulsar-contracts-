@@ -100,6 +100,94 @@ always re-tested on every run.
 
 ---
 
+## Fuzz Testing
+
+> **Issue T-023** — Fuzz coverage for `request_validation.rs` input
+> sanitisation.
+
+The contract also ships a [cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz)
+target that feeds arbitrary byte inputs into the string validation functions in
+`request_validation.rs` (merchant name, description, and contact info). This
+catches panics and unexpected behaviour on adversarial inputs that
+property-based tests are unlikely to generate.
+
+The fuzz target lives at:
+
+```
+contracts/payment-processing-contract/fuzz/fuzz_targets/request_validation.rs
+```
+
+### Install cargo-fuzz
+
+```bash
+cargo install cargo-fuzz
+```
+
+`cargo-fuzz` requires a nightly toolchain:
+
+```bash
+rustup toolchain install nightly
+```
+
+### Run the fuzz target locally
+
+From the fuzz directory:
+
+```bash
+cd contracts/payment-processing-contract/fuzz
+cargo fuzz run request_validation
+```
+
+The target runs until it finds a crash or you stop it with `Ctrl+C`.
+
+### Set a time limit
+
+Pass libFuzzer flags after `--`. For example, to run for 10 minutes:
+
+```bash
+cargo fuzz run request_validation -- -max_total_time=600
+```
+
+Other useful flags:
+
+| Flag | Description |
+|---|---|
+| `-max_total_time=<secs>` | Stop after the given number of seconds |
+| `-runs=<n>` | Stop after `n` individual inputs |
+| `-jobs=<n>` | Run `n` parallel fuzzing jobs |
+| `-workers=<n>` | Run `n` parallel worker processes |
+
+### Reproduce and minimise a crash
+
+When a crash is found, the offending input is written to
+`fuzz/artifacts/request_validation/`. Re-run it with:
+
+```bash
+cargo fuzz run request_validation fuzz/artifacts/request_validation/<crash-file>
+```
+
+Minimise the reproducer to the smallest input that still crashes:
+
+```bash
+cargo fuzz tmin request_validation fuzz/artifacts/request_validation/<crash-file>
+```
+
+Fix the underlying bug in `request_validation.rs` before merging, and add the
+minimised input as a regression case if appropriate.
+
+### CI
+
+The fuzz target is exercised by a nightly workflow
+(`.github/workflows/fuzz.yml`) that runs:
+
+```bash
+cargo fuzz run request_validation -- -max_total_time=600
+```
+
+for at least 10 minutes. Any crash fails the workflow.
+
+---
+
 ## CI
 
 Property-based tests run as a separate `property-tests` job in

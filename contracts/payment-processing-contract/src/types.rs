@@ -371,11 +371,13 @@ pub enum DataKey {
     /// Index of subscription IDs per merchant for list queries.
     MerchantSubscriptions(Address),
     MerchantStats(Address),
-    // Connection pooling storage keys
-    PoolConfig,
-    PoolStats,
-    PoolConnection(u32),
     /// Emergency stop flag (SEC-010). When `true`, all state-mutating functions
     /// return `ContractPaused`. Read-only functions are unaffected.
     Paused,
+    /// Namespaced feature flag (MISC-034). Maps a flag name (e.g.
+    /// `"subscriptions_enabled"`) to a `bool` value in persistent storage.
+    /// Flags are toggled by an admin via `set_feature_flag` without a
+    /// contract upgrade; see `docs/FEATURE_FLAGS.md` for the flag API and
+    /// the list of currently recognised flags.
+    FeatureFlag(String),
 }

@@ -15,13 +15,22 @@ A machine-readable ABI is available at [`docs/contract-abi.json`](./contract-abi
   - [Admin](#admin)
   - [Merchant Management](#merchant-management)
   - [Payment Processing](#payment-processing)
+  - [Batch Payment Initiation](#batch-payment-initiation)
   - [Payment Queries](#payment-queries)
   - [Refunds](#refunds)
   - [Multi-Signature Payments](#multi-signature-payments)
   - [Admin Config](#admin-config)
 - [Events](#events)
 - [Error Codes](#error-codes)
+- [HTTP Error Response Format](#http-error-response-format)
 - [TypeScript SDK](#typescript-sdk)
+- [HTTP API (Off-Chain Services)](#http-api-off-chain-services)
+  - [Health Endpoints](#health-endpoints)
+  - [Merchant Routes](#merchant-routes)
+  - [Payment Routes](#payment-routes)
+  - [Analytics Service](#analytics-service)
+  - [Webhook Registration](#webhook-registration)
+  - [DLQ Admin](#dlq-admin)
 
 ---
 
@@ -310,6 +319,116 @@ verifying that `signature` is a valid ed25519 signature of the serialised
 > **Idempotency**: `PaymentAlreadyExists` means the same `order_id` was already
 > processed. Off-chain clients should treat this as a success on retry. See
 > [IDEMPOTENCY_GUIDE.md](./IDEMPOTENCY_GUIDE.md).
+
+---
+
+### Batch Payment Initiation
+
+#### `POST /api/payments/batch`
+
+Submits multiple payment orders in a single HTTP request. Each order is
+submitted as its own Soroban transaction (one `process_payment_with_signature`
+invocation per order), so a failure in one order does not roll back the others.
+All results are returned together in a single response.
+
+**Batch size limit**: a maximum of **50** orders per request. Requests with more
+than 50 orders are rejected with HTTP `400` and error code `InvalidInput`; no
+orders are submitted.
+
+**Request body**
+
+| Field    | Type             | Description |
+|---|---|---|
+| `orders` | `BatchPaymentItem[]` | 1–50 payment orders to submit |
+
+Each `BatchPaymentItem`:
+
+| Field                 | Type           | Description |
+|---|---|---|
+| `payer`               | `Address`      | Source payer |
+| `order`               | `PaymentOrder` | Order to process (see [`PaymentOrder`](#paymentorder-struct)) |
+| `signature`           | `BytesN<64>`   | ed25519 signature over the serialised `order` |
+| `merchant_public_key` | `BytesN<32>`   | Merchant public key used to verify `signature` |
+
+```json
+{
+  "orders": [
+    {
+      "payer": "G...",
+      "order": {
+        "order_id": "ORDER-001",
+        "merchant_address": "G...",
+        "payer": "G...",
+        "token": "C...",
+        "amount": "1000",
+        "description": "Coffee purchase",
+        "expires_at": 0
+      },
+      "signature": "…64 bytes…",
+      "merchant_public_key": "…32 bytes…"
+    }
+  ]
+}
+```
+
+**Response body**
+
+| Field     | Type                 | Description |
+|---|---|---|
+| `results` | `BatchPaymentResult[]` | One entry per submitted order, in request order |
+| `succeeded` | `u32`              | Number of orders that succeeded |
+| `failed`  | `u32`                | Number of orders that failed |
+
+Each `BatchPaymentResult`:
+
+| Field      | Type             | Description |
+|---|---|---|
+| `index`    | `u32`            | Position of the order in the request (0-based) |
+| `order_id` | `Bytes`          | `order_id` from the submitted order |
+| `success`  | `bool`           | `true` if the payment was processed |
+| `tx_hash`  | `Option<String>` | Soroban transaction hash on success, `null` on failure |
+| `error`    | `Option<String>` | Error name (see [Error Codes](#error-codes)) on failure, `null` on success |
+
+> **Idempotency**: an order that fails with `PaymentAlreadyExists` is reported
+> as a failure in `results` with `error: "PaymentAlreadyExists"`. Clients should
+> treat that specific error as a success on retry, exactly as with the single
+> payment endpoint.
+
+**Example — all orders succeed** (`200 OK`)
+
+```json
+{
+  "results": [
+    { "index": 0, "order_id": "ORDER-001", "success": true, "tx_hash": "abc…", "error": null },
+    { "index": 1, "order_id": "ORDER-002", "success": true, "tx_hash": "def…", "error": null }
+  ],
+  "succeeded": 2,
+  "failed": 0
+}
+```
+
+**Example — mixed success/failure** (`200 OK`)
+
+```json
+{
+  "results": [
+    { "index": 0, "order_id": "ORDER-001", "success": true,  "tx_hash": "abc…", "error": null },
+    { "index": 1, "order_id": "ORDER-002", "success": false, "tx_hash": null,   "error": "MerchantInactive" },
+    { "index": 2, "order_id": "ORDER-003", "success": false, "tx_hash": null,   "error": "InvalidSignature" }
+  ],
+  "succeeded": 1,
+  "failed": 2
+}
+```
+
+**Example — over the batch limit** (`400 Bad Request`)
+
+```json
+{
+  "error": "InvalidInput",
+  "message": "Batch size exceeds maximum of 50 orders"
+}
+```
 
 ---
 
@@ -651,6 +770,129 @@ Emitted by `upgrade`.
 
 ---
 
+## HTTP Error Response Format
+
+All Pulsar Node.js/Express services return errors using a single, standard
+envelope. Clients can rely on this shape for every error path — validation
+failures, authentication errors, contract errors, and unexpected exceptions.
+
+### Schema
+
+```jsonc
+{
+  "error": {
+    "code": "string",       // stable, machine-readable error code
+    "message": "string",    // human-readable description
+    "requestId": "string"   // optional; correlates with server logs
+  }
+}
+```
+
+| Field       | Type     | Required | Description |
+|---|---|---|---|
+| `error`             | `object` | ✅ | Container for the error payload |
+| `error.code`        | `string` | ✅ | Stable identifier (see table below). Safe to branch on. |
+| `error.message`     | `string` | ✅ | Human-readable message. Do **not** parse this. |
+| `error.requestId`   | `string` | ❌ | Request correlation ID (also returned in the `X-Request-Id` response header when available). Include it when reporting issues. |
+
+> **Note**: The top-level response body contains **only** the `error` key.
+> Legacy shapes such as `{ "message": "..." }` or `{ "error": "..." }` are
+> deprecated and will be removed.
+
+### Example responses
+
+**Validation error (HTTP 400)**
+
+```json
+{
+  "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "amount must be greater than zero",
+    "requestId": "b1e6c2f0-8a4d-4c1e-9f2a-3d5e7c9a1b2f"
+  }
+}
+```
+
+**Contract error (HTTP 400)**
+
+```json
+{
+  "error": {
+    "code": "PAYMENT_ALREADY_EXISTS",
+    "message": "Payment with this order_id has already been processed",
+    "requestId": "b1e6c2f0-8a4d-4c1e-9f2a-3d5e7c9a1b2f"
+  }
+}
+```
+
+**Unexpected server error (HTTP 500)**
+
+```json
+{
+  "error": {
+    "code": "INTERNAL_ERROR",
+    "message": "An unexpected error occurred",
+    "requestId": "b1e6c2f0-8a4d-4c1e-9f2a-3d5e7c9a1b2f"
+  }
+}
+```
+
+### Common error codes
+
+| `error.code`                  | HTTP status | Description |
+|---|---|---|
+| `VALIDATION_ERROR`            | 400 | Request body/query failed validation |
+| `UNAUTHORIZED`                | 401 | Missing or invalid authentication |
+| `FORBIDDEN`                   | 403 | Authenticated but not permitted |
+| `NOT_FOUND`                   | 404 | Resource does not exist |
+| `CONFLICT`                    | 409 | Request conflicts with current state |
+| `RATE_LIMITED`                | 429 | Too many requests |
+| `INTERNAL_ERROR`              | 500 | Unexpected server-side failure |
+| `SERVICE_UNAVAILABLE`         | 503 | Upstream dependency unavailable |
+
+Contract errors (see [Error Codes](#error-codes)) are surfaced with their
+`SCREAMING_SNAKE_CASE` names, e.g. `MERCHANT_NOT_FOUND`,
+`PAYMENT_ALREADY_EXISTS`, `REFUND_WINDOW_EXPIRED`, `INSUFFICIENT_SIGNATURES`.
+
+### Stack traces and production safety
+
+Stack traces are **never** included in HTTP error responses when
+`NODE_ENV=production`. In non-production environments a `stack` field may be
+appended under `error` for debugging, but clients must not depend on it:
+
+```jsonc
+// Development only — never present in production
+{
+  "error": {
+    "code": "INTERNAL_ERROR",
+    "message": "An unexpected error occurred",
+    "requestId": "b1e6c2f0-8a4d-4c1e-9f2a-3d5e7c9a1b2f",
+    "stack": "Error: ...\n    at ..."
+  }
+}
+```
+
+### Client handling guidance
+
+```typescript
+async function callApi<T>(fn: () => Promise<Response>): Promise<T> {
+  const res = await fn();
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    const err = body?.error ?? { code: 'UNKNOWN', message: res.statusText };
+    // Branch on err.code, never on err.message
+    throw Object.assign(new Error(err.message), {
+      code: err.code,
+      requestId: err.requestId,
+      status: res.status,
+    });
+  }
+  return res.json() as Promise<T>;
+}
+```
+
+---
+
 ## TypeScript SDK
 
 The `@pulsar-contracts/sdk` package provides helpers for building and signing
@@ -695,3 +937,466 @@ console.log(result.alreadyExisted ? 'Duplicate (safe)' : 'New payment');
 For full SDK documentation see [`sdk/README.md`](../sdk/README.md).
 
 For idempotency guidance see [`docs/IDEMPOTENCY_GUIDE.md`](./IDEMPOTENCY_GUIDE.md).
+
+---
+
+## HTTP API (Off-Chain Services)
+
+The sections below document the HTTP services that sit alongside the contract:
+the API gateway (`api/`), the analytics service (`services/analytics-service/`),
+and the webhook service (`services/webhook/`).
+
+Unless stated otherwise:
+
+- All request and response bodies are JSON (`Content-Type: application/json`).
+- Errors use the shape `{ "error": "<message>" }` with the HTTP status codes
+  listed per endpoint.
+- Amounts are serialised as strings to avoid precision loss on `i128` values.
+
+---
+
+### Health Endpoints
+
+#### `GET /health`
+
+Liveness probe exposed by the API gateway (`api/src/server.js`).
+
+**Response `200 OK`**
+
+```json
+{ "status": "ok", "uptime": 1234.56 }
+```
+
+#### `GET /health` (analytics service)
+
+The analytics service exposes the same liveness contract.
+
+**Response `200 OK`**
+
+```json
+{ "status": "ok" }
+```
+
+---
+
+### Merchant Routes
+
+Base path: `/merchants` (`api/src/routes/merchants.js`).
+
+#### `GET /merchants/:address`
+
+Returns the merchant record for `address`.
+
+**Path parameters**
+
+| Name      | Type     | Description |
+|---|---|---|
+| `address` | `string` | Stellar merchant address |
+
+**Response `200 OK`**
+
+```json
+{
+  "address": "G...",
+  "name": "Acme Coffee",
+  "description": "Coffee shop",
+  "contactInfo": "hello@acme.example",
+  "category": "Food",
+  "active": true,
+  "registeredAt": "1700000000",
+  "signingPublicKey": null
+}
+```
+
+**Errors**: `404` merchant not found.
+
+---
+
+#### `GET /merchants/:address/payments`
+
+Paginated payment history for a merchant. Query parameters mirror
+`get_merchant_payment_history` on the contract.
+
+**Query parameters**
+
+| Name         | Type     | Default      | Description |
+|---|---|---|---|
+| `cursor`     | `string` | —            | Opaque pagination cursor (base64) |
+| `limit`      | `number` | `20`         | Page size, max `100` |
+| `dateStart`  | `number` | —            | Unix timestamp (seconds) |
+| `dateEnd`    | `number` | —            | Unix timestamp (seconds) |
+| `amountMin`  | `string` | —            | Minimum amount (`i128` as string) |
+| `amountMax`  | `string` | —            | Maximum amount (`i128` as string) |
+| `tokens`     | `string` | —            | Comma-separated token addresses |
+| `status`     | `string` | `Any`        | `Any` \| `Completed` \| `PartiallyRefunded` \| `FullyRefunded` |
+| `sortField`  | `string` | `Date`       | `Date` \| `Amount` |
+| `sortOrder`  | `string` | `Descending` | `Ascending` \| `Descending` |
+
+**Response `200 OK`**
+
+```json
+{
+  "records": [ /* PaymentRecord[] */ ],
+  "nextCursor": "eyJvZmZzZXQiOjIwfQ==",
+  "total": 42
+}
+```
+
+`nextCursor` is `null` on the last page.
+
+**Errors**: `400` invalid query parameter, `404` merchant not found.
+
+---
+
+### Payment Routes
+
+Base path: `/payments` (`api/src/routes/payments.js`).
+
+#### `GET /payments/:orderId`
+
+Returns a single payment record. `orderId` is the hex-encoded `Bytes` order ID.
+
+**Response `200 OK`**
+
+```json
+{
+  "orderId": "4f524445522d303031",
+  "merchantAddress": "G...",
+  "payer": "G...",
+  "token": "C...",
+  "amount": "1000",
+  "refundedAmount": "0",
+  "pendingRefundAmount": "0",
+  "status": "Completed",
+  "paidAt": "1700000000",
+  "description": "Coffee purchase"
+}
+```
+
+**Errors**: `404` payment not found.
+
+---
+
+#### `POST /payments`
+
+Submits a signed payment order to the contract.
+
+**Request body**
+
+| Field               | Type     | Required | Description |
+|---|---|---|---|
+| `payer`             | `string` | yes      | Payer address |
+| `order`             | `object` | yes      | `PaymentOrder` (see [Data Types](#paymentorder-struct)) |
+| `signature`         | `string` | yes      | Hex-encoded 64-byte ed25519 signature |
+| `merchantPublicKey` | `string` | yes      | Hex-encoded 32-byte ed25519 public key |
+
+**Response `201 Created`**
+
+```json
+{ "orderId": "4f524445522d303031", "status": "Completed" }
+```
+
+A duplicate `orderId` returns `200 OK` with `"alreadyExisted": true` rather than
+an error (idempotent retry semantics).
+
+**Errors**: `400` invalid body, `422` contract rejected the payment
+(`InvalidSignature`, `PaymentExpired`, `InvalidAmount`, …).
+
+---
+
+### Analytics Service
+
+Base path: `/analytics` (`services/analytics-service/src/api.ts`). All
+endpoints accept an optional `merchant` query parameter to scope results to a
+single merchant; omitting it aggregates across all merchants.
+
+#### `GET /analytics/summary`
+
+Aggregate totals for the requested scope.
+
+**Query parameters**
+
+| Name       | Type     | Default | Description |
+|---|---|---|---|
+| `merchant` | `string` | —       | Merchant address filter |
+| `from`     | `number` | —       | Unix timestamp (seconds), inclusive |
+| `to`       | `number` | —       | Unix timestamp (seconds), inclusive |
+
+**Response `200 OK`**
+
+```json
+{
+  "totalPayments": 128,
+  "totalVolume": "250000",
+  "totalRefunds": 6,
+  "totalRefundVolume": "12000",
+  "averagePayment": "1953"
+}
+```
+
+**Errors**: `400` invalid date range.
+
+---
+
+#### `GET /analytics/trends`
+
+Time-bucketed payment volume and counts.
+
+**Query parameters**
+
+| Name       | Type     | Default | Description |
+|---|---|---|---|
+| `merchant` | `string` | —       | Merchant address filter |
+| `from`     | `number` | —       | Unix timestamp (seconds) |
+| `to`       | `number` | —       | Unix timestamp (seconds) |
+| `interval` | `string` | `day`   | `hour` \| `day` \| `week` \| `month` |
+
+**Response `200 OK`**
+
+```json
+{
+  "interval": "day",
+  "points": [
+    { "bucket": "2024-01-01", "payments": 12, "volume": "24000" }
+  ]
+}
+```
+
+**Errors**: `400` invalid `interval` or date range.
+
+---
+
+#### `GET /analytics/segments`
+
+Breaks payments down by a dimension.
+
+**Query parameters**
+
+| Name        | Type     | Default   | Description |
+|---|---|---|---|
+| `merchant`  | `string` | —         | Merchant address filter |
+| `from`      | `number` | —         | Unix timestamp (seconds) |
+| `to`        | `number` | —         | Unix timestamp (seconds) |
+| `dimension` | `string` | `token`   | `token` \| `merchant` \| `status` |
+
+**Response `200 OK`**
+
+```json
+{
+  "dimension": "token",
+  "segments": [
+    { "key": "C...", "payments": 80, "volume": "160000" }
+  ]
+}
+```
+
+**Errors**: `400` invalid `dimension`.
+
+---
+
+#### `GET /analytics/tokens`
+
+Per-token totals for the requested scope.
+
+**Query parameters**
+
+| Name       | Type     | Default | Description |
+|---|---|---|---|
+| `merchant` | `string` | —       | Merchant address filter |
+| `from`     | `number` | —       | Unix timestamp (seconds) |
+| `to`       | `number` | —       | Unix timestamp (seconds) |
+
+**Response `200 OK`**
+
+```json
+{
+  "tokens": [
+    { "token": "C...", "payments": 80, "volume": "160000", "refunds": 3, "refundVolume": "6000" }
+  ]
+}
+```
+
+---
+
+#### `POST /analytics/custom-report`
+
+Runs an ad-hoc report described by the request body.
+
+**Request body**
+
+| Field        | Type       | Required | Description |
+|---|---|---|---|
+| `merchant`   | `string`   | no       | Merchant address filter |
+| `from`       | `number`   | no       | Unix timestamp (seconds) |
+| `to`         | `number`   | no       | Unix timestamp (seconds) |
+| `metrics`    | `string[]` | yes      | Any of `payments`, `volume`, `refunds`, `refundVolume`, `averagePayment` |
+| `groupBy`    | `string`   | no       | `day` \| `week` \| `month` \| `token` \| `merchant` |
+| `filters`    | `object`   | no       | `{ "status"?: string, "tokens"?: string[] }` |
+
+**Response `200 OK`**
+
+```json
+{
+  "rows": [
+    { "group": "2024-01-01", "payments": 12, "volume": "24000" }
+  ]
+}
+```
+
+**Errors**: `400` unknown metric or `groupBy` value, `422` invalid filter.
+
+---
+
+### Webhook Registration
+
+Base path: `/webhooks` (`services/webhook/src/api.ts`). Webhooks are delivered
+as signed `POST` requests to the registered `url`; each delivery includes an
+`X-Pulsar-Signature` header containing an HMAC-SHA256 of the raw body keyed by
+the registration's `secret`.
+
+#### `POST /webhooks`
+
+Registers a new webhook endpoint.
+
+**Request body**
+
+| Field     | Type       | Required | Description |
+|---|---|---|---|
+| `url`     | `string`   | yes      | HTTPS endpoint to deliver events to |
+| `events`  | `string[]` | yes      | Event names, e.g. `payment_processed`, `refund_executed` |
+| `secret`  | `string`   | no       | Signing secret; generated and returned if omitted |
+| `active`  | `boolean`  | no       | Defaults to `true` |
+
+**Response `201 Created`**
+
+```json
+{
+  "id": "wh_01HXYZ",
+  "url": "https://example.com/hooks/pulsar",
+  "events": ["payment_processed"],
+  "secret": "whsec_...",
+  "active": true,
+  "createdAt": "2024-01-01T00:00:00.000Z"
+}
+```
+
+The `secret` is only returned on creation.
+
+**Errors**: `400` missing `url`/`events` or non-HTTPS URL.
+
+---
+
+#### `GET /webhooks`
+
+Lists all registered webhooks. Secrets are redacted.
+
+**Response `200 OK`**
+
+```json
+{
+  "webhooks": [
+    {
+      "id": "wh_01HXYZ",
+      "url": "https://example.com/hooks/pulsar",
+      "events": ["payment_processed"],
+      "active": true,
+      "createdAt": "2024-01-01T00:00:00.000Z"
+    }
+  ]
+}
+```
+
+---
+
+#### `DELETE /webhooks/:id`
+
+Deletes a webhook registration.
+
+**Response `204 No Content`**
+
+**Errors**: `404` webhook not found.
+
+---
+
+### DLQ Admin
+
+Base path: `/admin/dlq` (`services/webhook/src/dlq.ts`). These endpoints manage
+the webhook dead-letter queue. They require an admin bearer token
+(`Authorization: Bearer <token>`); missing or invalid tokens return `401`.
+
+#### `GET /admin/dlq`
+
+Lists dead-lettered deliveries, newest first.
+
+**Query parameters**
+
+| Name    | Type     | Default | Description |
+|---|---|---|---|
+| `limit` | `number` | `50`    | Page size, max `200` |
+| `cursor`| `string` | —       | Opaque pagination cursor |
+
+**Response `200 OK`**
+
+```json
+{
+  "entries": [
+    {
+      "id": "dlq_01HXYZ",
+      "webhookId": "wh_01HXYZ",
+      "event": "payment_processed",
+      "attempts": 5,
+      "lastError": "HTTP 500",
+      "failedAt": "2024-01-01T00:00:00.000Z"
+    }
+  ],
+  "nextCursor": null
+}
+```
+
+---
+
+#### `GET /admin/dlq/:id`
+
+Returns a single dead-letter entry including the original payload.
+
+**Response `200 OK`**
+
+```json
+{
+  "id": "dlq_01HXYZ",
+  "webhookId": "wh_01HXYZ",
+  "event": "payment_processed",
+  "payload": { "orderId": "4f524445522d303031" },
+  "attempts": 5,
+  "lastError": "HTTP 500",
+  "failedAt": "2024-01-01T00:00:00.000Z"
+}
+```
+
+**Errors**: `404` entry not found.
+
+---
+
+#### `POST /admin/dlq/:id/replay`
+
+Re-delivers the entry to its webhook. On success the entry is removed from the
+DLQ; on failure it remains with an incremented `attempts` count.
+
+**Response `200 OK`**
+
+```json
+{ "id": "dlq_01HXYZ", "replayed": true, "status": 200 }
+```
+
+**Errors**: `404` entry not found, `409` webhook registration no longer exists,
+`502` delivery failed.
+
+---
+
+#### `DELETE /admin/dlq/:id`
+
+Permanently discards a dead-letter entry.
+
+**Response `204 No Content`**
+
+**Errors**: `404` entry not found.

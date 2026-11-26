@@ -28,10 +28,22 @@ target_file="$BACKUP_ROOT/pulsar-db-backup-$TIMESTAMP.dump"
 export PGPASSWORD="${PGPASSWORD:-}"
 
 echo "[backup] Creating PostgreSQL dump: $target_file"
-pg_dump --format=custom --file="$target_file" "$DATABASE_URL"
+if ! pg_dump --format=custom --file="$target_file" "$DATABASE_URL"; then
+  echo "[backup] ERROR: pg_dump failed for $target_file" >&2
+  exit 1
+fi
 
-echo "[backup] Verifying backup file integrity"
-pg_restore --list "$target_file" >/dev/null
+echo "[backup] Verifying backup file is non-empty"
+if [[ ! -s "$target_file" ]]; then
+  echo "[backup] ERROR: backup file is missing or empty: $target_file" >&2
+  exit 1
+fi
+
+echo "[backup] Verifying backup file integrity (pg_restore --list)"
+if ! pg_restore --list "$target_file" >/dev/null; then
+  echo "[backup] ERROR: backup file is not a valid/parseable dump: $target_file" >&2
+  exit 1
+fi
 
 if [[ -n "$AWS_S3_BUCKET" ]]; then
   echo "[backup] Uploading backup to s3://$AWS_S3_BUCKET/"
