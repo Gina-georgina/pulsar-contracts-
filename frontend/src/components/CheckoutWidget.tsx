@@ -1,6 +1,15 @@
 import React, { useState } from "react";
+import {
+  SorobanRpc,
+  TransactionBuilder,
+  Account,
+  nativeToScVal,
+  Address,
+  xdr,
+} from "@stellar/stellar-sdk";
 import { useContractCall } from "../hooks/useContractCall";
 import { Spinner, ErrorMessage, SuccessBanner } from "./ContractCallStatus";
+import { server, contract } from "../contract";
 
 export interface CheckoutWidgetProps {
   /** Merchant-assigned order identifier. */
@@ -62,9 +71,6 @@ export function CheckoutWidget({
     if (!walletAddress) return;
 
     await execute(async () => {
-      const freighter = (window as any).freighter;
-
-      // Build the order payload
       const order = {
         order_id: orderId,
         merchant_address: merchantAddress,
@@ -75,14 +81,7 @@ export function CheckoutWidget({
         expires_at: Math.floor(Date.now() / 1000) + 3600,
       };
 
-      // Sign the order with Freighter
-      const orderJson = JSON.stringify(order);
-      const { signedXDR } = await freighter.signTransaction(orderJson, {
-        network: "TESTNET",
-      });
-
-      // Submit to contract (replace with actual @stellar/stellar-sdk call)
-      const txHash = await submitPayment({ order, signature: signedXDR });
+      const txHash = await submitPayment({ order, payer: walletAddress });
 
       // Fire success callback inside the executor so the txHash is available
       // immediately and before React re-renders with the success state.
@@ -165,10 +164,100 @@ export function CheckoutWidget({
   );
 }
 
-/** Stub — replace with actual @stellar/stellar-sdk contract invocation. */
-async function submitPayment(_payload: {
-  order: object;
-  signature: string;
+/** Polling interval and overall timeout for transaction confirmation. */
+const POLL_INTERVAL_MS = 2000;
+const CONFIRM_TIMEOUT_MS = 60_000;
+
+/**
+ * Invoke the contract's `pay` method with the order details, sign the prepared
+ * transaction via Freighter, submit it, and poll until it is confirmed.
+ *
+ * @returns the confirmed transaction hash.
+ */
+export async function submitPayment(payload: {
+  order: {
+    order_id: string;
+    merchant_address: string;
+    payer: string;
+    token: string;
+    amount: number;
+    description: string;
+    expires_at: number;
+  };
+  payer: string;
 }): Promise<string> {
-  throw new Error("submitPayment: not yet wired to contract SDK.");
+  const { order, payer } = payload;
+
+  const freighter = (window as any).freighter;
+  if (!freighter) {
+    throw new Error("Freighter wallet extension not found. Please install it.");
+  }
+
+  // Load the payer account to obtain the current sequence number.
+  const account = await server.getAccount(payer);
+
+  // Build the contract invocation for `pay(order_id, merchant, payer, token, amount)`.
+  const tx = new TransactionBuilder(account, {
+    fee: "1000000",
+    networkPassphrase: (server as any).serverURL?.includes?.("futurenet")
+      ? "Test SDF Future Network ; October 2022"
+      : "Test SDF Network ; September 2015",
+  })
+    .addOperation(
+      contract.call(
+        "pay",
+        nativeToScVal(order.order_id, { type: "string" }),
+        new Address(order.merchant_address).toScVal(),
+        new Address(order.payer).toScVal(),
+        new Address(order.token).toScVal(),
+        nativeToScVal(order.amount, { type: "i128" }),
+      ),
+    )
+    .setTimeout(30)
+    .build();
+
+  // Simulate + assemble the transaction (adds footprint and resource fees).
+  const prepared = await server.prepareTransaction(tx);
+
+  // Sign the prepared XDR with Freighter.
+  const signed = await freighter.signTransaction(prepared.toXDR(), {
+    network: "TESTNET",
+  });
+  const signedXDR: string =
+    typeof signed === "string" ? signed : signed?.signedXDR ?? signed?.signedTxXdr;
+  if (!signedXDR) {
+    throw new Error("Freighter did not return a signed transaction.");
+  }
+
+  // Submit the signed transaction.
+  const sendResponse = await server.sendTransaction(
+    TransactionBuilder.fromXDR(signedXDR, prepared.networkPassphrase),
+  );
+
+  if (sendResponse.status === "ERROR") {
+    throw new Error(
+      `Transaction submission failed: ${JSON.stringify(sendResponse.errorResult ?? sendResponse)}`,
+    );
+  }
+
+  const hash = sendResponse.hash;
+
+  // Poll until confirmed or failed.
+  const deadline = Date.now() + CONFIRM_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    const result = await server.getTransaction(hash);
+
+    if (result.status === SorobanRpc.Api.GetTransactionStatus.SUCCESS) {
+      return hash;
+    }
+    if (result.status === SorobanRpc.Api.GetTransactionStatus.FAILED) {
+      throw new Error(`Transaction ${hash} failed on-chain.`);
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+  }
+
+  throw new Error(
+    `Timed out waiting for transaction ${hash} to confirm after ${CONFIRM_TIMEOUT_MS}ms.`,
+  );
 }
