@@ -291,25 +291,87 @@ pub fn save_refund(env: &Env, refund: &RefundRecord) {
         .extend_ttl(&key, TTL_THRESHOLD, TTL_LEDGERS);
 }
 
-pub fn get_all_refund_ids(env: &Env) -> Vec<Bytes> {
-    let key = DataKey::AllRefunds;
-    let result: Option<Vec<Bytes>> = env.storage().persistent().get(&key);
-    if result.is_some() {
+/// A page of refund IDs returned by `get_refund_page_ids`.
+///
+/// `next_cursor` is `None` when the returned page is the last one; otherwise
+/// it is the cursor that should be passed to the next call.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RefundPage {
+    pub ids: Vec<Bytes>,
+    pub next_cursor: Option<u32>,
+}
+
+/// Maximum number of refund IDs returned by a single page query.
+pub const MAX_REFUND_PAGE_SIZE: u32 = 100;
+
+/// Return the total number of refund IDs recorded in the refund index.
+pub fn get_refund_count(env: &Env) -> u32 {
+    let key = DataKey::RefundCount;
+    let result: u32 = env.storage().persistent().get(&key).unwrap_or(0);
+    if result > 0 {
         env.storage()
             .persistent()
             .extend_ttl(&key, TTL_THRESHOLD, TTL_LEDGERS);
     }
-    result.unwrap_or_else(|| Vec::new(env))
+    result
 }
 
-pub fn push_all_refund_id(env: &Env, refund_id: &Bytes) {
-    let mut ids = get_all_refund_ids(env);
-    ids.push_back(refund_id.clone());
-    let key = DataKey::AllRefunds;
-    env.storage().persistent().set(&key, &ids);
+/// Append a refund ID to the insertion-ordered refund index.
+///
+/// The index is stored as one entry per position (`DataKey::RefundIndex(i)`)
+/// so that appending is O(1) and paging never loads the full list into memory.
+pub fn append_refund_id(env: &Env, refund_id: &Bytes) {
+    let count = get_refund_count(env);
+    let key = DataKey::RefundIndex(count);
+    env.storage().persistent().set(&key, refund_id);
     env.storage()
         .persistent()
         .extend_ttl(&key, TTL_THRESHOLD, TTL_LEDGERS);
+
+    let count_key = DataKey::RefundCount;
+    env.storage().persistent().set(&count_key, &(count + 1));
+    env.storage()
+        .persistent()
+        .extend_ttl(&count_key, TTL_THRESHOLD, TTL_LEDGERS);
+}
+
+/// Return a cursor-paginated slice of refund IDs.
+///
+/// `cursor` is the zero-based index of the first ID to return (pass `0` for
+/// the first page). `limit` is clamped to `[1, MAX_REFUND_PAGE_SIZE]`.
+pub fn get_refund_page_ids(env: &Env, cursor: u32, limit: u32) -> RefundPage {
+    let total = get_refund_count(env);
+    let limit = if limit == 0 {
+        1
+    } else if limit > MAX_REFUND_PAGE_SIZE {
+        MAX_REFUND_PAGE_SIZE
+    } else {
+        limit
+    };
+
+    let mut ids = Vec::new(env);
+    if cursor >= total {
+        return RefundPage {
+            ids,
+            next_cursor: None,
+        };
+    }
+
+    let end = cursor.saturating_add(limit).min(total);
+    let mut i = cursor;
+    while i < end {
+        let key = DataKey::RefundIndex(i);
+        if let Some(id) = env.storage().persistent().get::<DataKey, Bytes>(&key) {
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, TTL_THRESHOLD, TTL_LEDGERS);
+            ids.push_back(id);
+        }
+        i += 1;
+    }
+
+    let next_cursor = if end < total { Some(end) } else { None };
+    RefundPage { ids, next_cursor }
 }
 
 // ── Per-order pending refund count ────────────────────────────────────────────
@@ -438,6 +500,9 @@ pub const DEFAULT_CLEANUP_PERIOD: u64 = 7_776_000;
 /// network timing variance, not to provide a meaningful extension of the window.
 pub const REFUND_WINDOW: u64 = 2_592_000;
 
+/// Maximum configurable refund window: 365 days in seconds.
+pub const MAX_REFUND_WINDOW: u64 = 31_536_000;
+
 /// Grace buffer added to the refund deadline: 1 hour in seconds.
 ///
 /// A refund is accepted when `now <= paid_at + REFUND_WINDOW + REFUND_GRACE_BUFFER`.
@@ -447,6 +512,49 @@ pub const REFUND_WINDOW: u64 = 2_592_000;
 /// ledger whose `close_time` is a few seconds past the nominal deadline). It
 /// does not meaningfully extend the 30-day window from a user perspective.
 pub const REFUND_GRACE_BUFFER: u64 = 3_600;
+
+/// Return the configured refund window, falling back to `REFUND_WINDOW`
+/// when no admin override has been stored (migration path).
+pub fn get_refund_window(env: &Env) -> u64 {
+    env.storage()
+        .instance()
+        .get(&DataKey::RefundWindow)
+        .unwrap_or(REFUND_WINDOW)
+}
+
+/// Return the configured refund grace buffer, falling back to
+/// `REFUND_GRACE_BUFFER` when no admin override has been stored.
+pub fn get_refund_grace_buffer(env: &Env) -> u64 {
+    env.storage()
+        .instance()
+        .get(&DataKey::RefundGraceBuffer)
+        .unwrap_or(REFUND_GRACE_BUFFER)
+}
+
+/// Set the refund window and grace buffer in instance storage.
+///
+/// Bounds validation:
+/// * `window_secs` must be greater than zero and at most `MAX_REFUND_WINDOW`.
+/// * `grace_buffer_secs` must not exceed `window_secs`.
+pub fn set_refund_window(
+    env: &Env,
+    window_secs: u64,
+    grace_buffer_secs: u64,
+) -> Result<(), PaymentError> {
+    if window_secs == 0 || window_secs > MAX_REFUND_WINDOW {
+        return Err(PaymentError::InvalidRefundWindow);
+    }
+    if grace_buffer_secs > window_secs {
+        return Err(PaymentError::InvalidRefundWindow);
+    }
+    env.storage()
+        .instance()
+        .set(&DataKey::RefundWindow, &window_secs);
+    env.storage()
+        .instance()
+        .set(&DataKey::RefundGraceBuffer, &grace_buffer_secs);
+    Ok(())
+}
 
 /// Default multisig expiry: 24 hours in seconds
 pub const DEFAULT_MULTISIG_EXPIRY: u64 = 86_400;
@@ -496,10 +604,44 @@ pub fn set_default_multisig_expiry(env: &Env, expiry: u64) {
         .set(&DataKey::DefaultMultisigExpiry, &expiry);
 }
 
+// ── Feature flags (MISC-034) ──────────────────────────────────────────────────
+
+/// Feature flag name for subscription payments.
+pub const FLAG_SUBSCRIPTIONS_ENABLED: &str = "subscriptions_enabled";
+/// Feature flag name for token allowlist enforcement.
+pub const FLAG_TOKEN_ALLOWLIST_ENFORCED: &str = "token_allowlist_enforced";
+
+/// Returns the value of the named feature flag, defaulting to `false` when
+/// the flag has never been set. Flags live in instance storage so reads are
+/// O(1) and are covered by `bump_instance_ttl`.
+pub fn get_feature_flag(env: &Env, name: &str) -> bool {
+    let key = DataKey::FeatureFlag(soroban_sdk::String::from_str(env, name));
+    env.storage().instance().get(&key).unwrap_or(false)
+}
+
+/// Enable or disable the named feature flag. Callers must be admin-gated at
+/// the contract entry-point level; this helper performs no auth checks.
+pub fn set_feature_flag(env: &Env, name: &str, enabled: bool) {
+    let key = DataKey::FeatureFlag(soroban_sdk::String::from_str(env, name));
+    env.storage().instance().set(&key, &enabled);
+    bump_instance_ttl(env);
+}
+
 // ── Token allowlist (SEC-009) ─────────────────────────────────────────────────
 
 /// Returns true when the token allowlist enforcement is active.
+///
+/// Consults the `token_allowlist_enforced` feature flag first (MISC-034).
+/// When the flag is unset, falls back to the legacy `TokenAllowlistEnabled`
+/// key for backward compatibility with deployments that predate the flag.
 pub fn is_token_allowlist_enabled(env: &Env) -> bool {
+    let flag_key = DataKey::FeatureFlag(soroban_sdk::String::from_str(
+        env,
+        FLAG_TOKEN_ALLOWLIST_ENFORCED,
+    ));
+    if let Some(enabled) = env.storage().instance().get::<_, bool>(&flag_key) {
+        return enabled;
+    }
     env.storage()
         .instance()
         .get(&DataKey::TokenAllowlistEnabled)

@@ -1575,5 +1575,84 @@
       ]
     ]
   },
-  "events": []
+  "events": [
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+        "type_": "contract",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "payment_archived"
+              },
+              {
+                "bytes": "4f524445525f303031"
+              }
+            ],
+            "data": {
+              "map": [
+                {
+                  "key": {
+                    "symbol": "order_id"
+                  },
+                  "val": {
+                    "bytes": "4f524445525f303031"
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "timestamp"
+                  },
+                  "val": {
+                    "u64": 7201
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+        "type_": "contract",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "payment_archived"
+              },
+              {
+                "bytes": "4f524445525f303032"
+              }
+            ],
+            "data": {
+              "map": [
+                {
+                  "key": {
+                    "symbol": "order_id"
+                  },
+                  "val": {
+                    "bytes": "4f524445525f303032"
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "timestamp"
+                  },
+                  "val": {
+                    "u64": 7201
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    }
+  ]
 }

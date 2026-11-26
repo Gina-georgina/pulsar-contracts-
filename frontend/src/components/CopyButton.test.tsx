@@ -38,6 +38,24 @@ test("shows 'Copied!' and live region after successful copy", async () => {
   expect(screen.getByRole("status")).toHaveTextContent("Copied to clipboard");
 });
 
+test("clears the live region announcement after 2 s", async () => {
+  mockWriteText.mockResolvedValue(undefined);
+  render(<CopyButton text="abc123" />);
+
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button"));
+  });
+
+  const liveRegion = screen.getByRole("status");
+  expect(liveRegion).toHaveTextContent("Copied to clipboard");
+
+  act(() => {
+    jest.advanceTimersByTime(2000);
+  });
+
+  expect(screen.getByRole("status")).toHaveTextContent("");
+});
+
 test("shows error state when clipboard write fails", async () => {
   mockWriteText.mockRejectedValue(new Error("denied"));
   render(<CopyButton text="abc123" />);

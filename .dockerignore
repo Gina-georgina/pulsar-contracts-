@@ -1,11 +1,16 @@
 # =============================================================================
 # Docker build context exclusions
 # =============================================================================
-# Keeps `docker compose build` fast by preventing large/local-only artefacts
-# from being sent to the Docker daemon as build context.  Anything mounted into
-# the dev container at runtime is unaffected — `docker-compose.yml` bind-mounts
-# the whole repo into /workspace, so these exclusions only apply to the image
-# *build* step, not to the running container.
+# Keeps `docker compose build` (dev image) and `docker build` (production
+# multi-stage image) fast by preventing large/local-only artefacts from being
+# sent to the Docker daemon as build context.
+#
+# NOTE: The production Dockerfile is a multi-stage build. The build stage needs
+# the Rust sources, Cargo.toml/Cargo.lock, and any config it bakes in. The
+# runtime stage copies only the compiled binary and config from the build
+# stage. Anything mounted into the dev container at runtime is unaffected —
+# `docker-compose.yml` bind-mounts the whole repo into /workspace, so these
+# exclusions only apply to the image *build* step, not to the running container.
 # =============================================================================
 
 # Rust build artefacts — can be many GB; regenerated inside the container
@@ -21,10 +26,12 @@ target/
 .github/
 .gitlab-ci.yml
 
-# Node / API layer (not needed inside the Rust dev image)
+# Node / API layer (not needed inside the Rust image)
 api/node_modules/
 api/dist/
 api/.env
+**/node_modules/
+**/dist/
 
 # Python / pre-commit caches
 **/__pycache__/
@@ -36,6 +43,14 @@ venv/
 **/test_snapshots/
 **/lcov.info
 **/coverage/
+
+# Tests — not required to compile the production binary
+tests/
+**/tests/
+benches/
+**/benches/
+examples/
+**/examples/
 
 # IDE / editor
 .idea/
@@ -52,5 +67,25 @@ docs/
 *.md
 !README.md
 
+# Monitoring stack (dev-only; not part of the production image)
+monitoring/
+**/monitoring/node_modules/
+
+# Local env files and secrets — never bake these into an image
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+
 # Large local config that should not be baked into the image
 config/local.toml
+
+# Docker files themselves (not needed inside the build context)
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+</｜｜DSML｜｜ parameter>
+</｜｜DSML｜｜ invoke>
+</｜｜DSML｜｜ calls>

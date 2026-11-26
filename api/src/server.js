@@ -6,18 +6,10 @@ import paymentsRouter from "./routes/payments.js";
 
 const app = express();
 
-// Request-ID middleware: generate or propagate X-Request-ID for distributed tracing.
-// Must run before all routes and other middleware so every request is correlated.
+// Attach a request ID to every request for inclusion in error responses.
 app.use((req, res, next) => {
-  const incomingId = req.headers["x-request-id"];
-  const requestId =
-    typeof incomingId === "string" && incomingId.trim() !== ""
-      ? incomingId.trim()
-      : randomUUID();
-
-  req.requestId = requestId;
-  res.setHeader("X-Request-ID", requestId);
-
+  req.id = req.headers["x-request-id"] || randomUUID();
+  res.setHeader("x-request-id", req.id);
   next();
 });
 
@@ -27,6 +19,15 @@ app.get("/health", (_req, res) => res.json({ status: "ok" }));
 app.use("/api/merchants", merchantsRouter);
 app.use("/api/payments", paymentsRouter);
 
+// 404 handler for unmatched routes, using the standard error format.
+app.use((req, res, next) => {
+  const err = new Error("Not Found");
+  err.status = 404;
+  err.code = "NOT_FOUND";
+  next(err);
+});
+
+// Shared error middleware must be registered last, after all routes.
 app.use(errorMiddleware);
 
 const PORT = process.env.PORT || 3000;

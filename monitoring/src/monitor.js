@@ -13,10 +13,53 @@
 
 "use strict";
 
+const http = require("http");
 const { Horizon } = require("@stellar/stellar-sdk");
 const config = require("./config");
 const { Metrics } = require("./metrics");
 const { alert } = require("./alerts");
+
+// ── Graceful shutdown state ────────────────────────────────────────────────
+
+/** Maximum time (ms) to wait for in-flight work before forcing exit. */
+const SHUTDOWN_TIMEOUT_MS = 10_000;
+
+/** Set to true once SIGTERM/SIGINT has been received. */
+let shuttingDown = false;
+
+/** Number of in-flight operations (event handling / anomaly checks). */
+let inFlight = 0;
+
+/** Handle for the pending poll timer, so it can be cleared on shutdown. */
+let pollTimer = null;
+
+/** Handle for the pending ping timer, so it can be cleared on shutdown. */
+let pingTimer = null;
+
+/** Resolvers waiting for in-flight work to drain. */
+let drainResolvers = [];
+
+function beginOperation() {
+  inFlight++;
+}
+
+function endOperation() {
+  inFlight = Math.max(0, inFlight - 1);
+  if (inFlight === 0 && drainResolvers.length > 0) {
+    const resolvers = drainResolvers;
+    drainResolvers = [];
+    for (const resolve of resolvers) resolve();
+  }
+}
+
+/**
+ * Resolve once all in-flight operations have completed (or immediately if
+ * none are running).
+ */
+function waitForInFlight() {
+  if (inFlight === 0) return Promise.resolve();
+  return new Promise((resolve) => drainResolvers.push(resolve));
+}
 
 // ── Horizon client ─────────────────────────────────────────────────────────
 
@@ -52,6 +95,15 @@ let cursor = "now";
  * @param {object} event  Raw Horizon contract event record.
  */
 async function handleEvent(event) {
+  beginOperation();
+  try {
+    await handleEventInner(event);
+  } finally {
+    endOperation();
+  }
+}
+
+async function handleEventInner(event) {
   const topic = event.topic?.[0]?.value ?? "";
 
   // Record every event as a transaction attempt.
@@ -119,6 +171,15 @@ function parseAmount(value) {
  * Called after each poll cycle.
  */
 async function checkAnomalies() {
+  beginOperation();
+  try {
+    await checkAnomaliesInner();
+  } finally {
+    endOperation();
+  }
+}
+
+async function checkAnomaliesInner() {
   const windowMs = config.refundRateWindowMs;
 
   // 1. Refund rate
@@ -153,6 +214,10 @@ async function checkAnomalies() {
  * process each event, then schedule the next poll.
  */
 async function poll() {
+  if (shuttingDown) {
+    return;
+  }
+
   if (!config.contractId) {
     console.warn("[monitor] CONTRACT_ID not set — skipping poll.");
     scheduleNextPoll();
@@ -187,7 +252,10 @@ async function poll() {
 }
 
 function scheduleNextPoll() {
-  setTimeout(poll, config.pollIntervalMs);
+  if (shuttingDown) {
+    return;
+  }
+  pollTimer = setTimeout(poll, config.pollIntervalMs);
 }
 
 // ── Entry point ────────────────────────────────────────────────────────────
@@ -201,6 +269,8 @@ async function main() {
 
   // Log initial metric snapshot.
   console.log("[monitor] Initial metrics:", metrics.snapshot(config.refundRateWindowMs));
+
+  startHealthServer();
 
   poll();
   pingContract();
@@ -219,9 +289,13 @@ async function main() {
  * The interval defaults to every 5 minutes (configurable via PING_INTERVAL_MS).
  */
 async function pingContract() {
+  if (shuttingDown) {
+    return;
+  }
+
   if (!config.contractId) {
     // Skip silently if no contract is configured.
-    setTimeout(pingContract, config.pingIntervalMs);
+    pingTimer = setTimeout(pingContract, config.pingIntervalMs);
     return;
   }
 
@@ -251,8 +325,95 @@ async function pingContract() {
     );
   }
 
-  setTimeout(pingContract, config.pingIntervalMs);
+  if (shuttingDown) {
+    return;
+  }
+  pingTimer = setTimeout(pingContract, config.pingIntervalMs);
 }
+
+// ── Health endpoint ────────────────────────────────────────────────────────
+
+/**
+ * Minimal HTTP health endpoint. Returns 200 while the monitor is running and
+ * 503 once a shutdown has been initiated, so load balancers / orchestrators
+ * stop routing traffic to this instance.
+ */
+function startHealthServer() {
+  const port = Number(process.env.HEALTH_PORT ?? 8080);
+
+  const server = http.createServer((req, res) => {
+    if (req.url === "/health" || req.url === "/healthz") {
+      if (shuttingDown) {
+        res.writeHead(503, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ status: "shutting_down" }));
+      } else {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ status: "ok", in_flight: inFlight }));
+      }
+      return;
+    }
+
+    res.writeHead(404, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "not_found" }));
+  });
+
+  server.listen(port, () => {
+    console.log(`[monitor] Health endpoint listening on :${port}/health`);
+  });
+
+  return server;
+}
+
+// ── Graceful shutdown ──────────────────────────────────────────────────────
+
+/**
+ * Stop accepting new work, wait up to SHUTDOWN_TIMEOUT_MS for in-flight
+ * operations to finish, then exit.
+ *
+ * @param {string} signal  The signal that triggered the shutdown.
+ */
+async function gracefulShutdown(signal) {
+  if (shuttingDown) {
+    return;
+  }
+  shuttingDown = true;
+
+  console.log(
+    `[monitor] Received ${signal} — shutting down ` +
+      `(waiting up to ${SHUTDOWN_TIMEOUT_MS / 1000}s for in-flight work).`
+  );
+
+  // Stop scheduling new work.
+  if (pollTimer) {
+    clearTimeout(pollTimer);
+    pollTimer = null;
+  }
+  if (pingTimer) {
+    clearTimeout(pingTimer);
+    pingTimer = null;
+  }
+
+  // Wait for in-flight work, bounded by the shutdown timeout.
+  let timeoutHandle;
+  const timeout = new Promise((resolve) => {
+    timeoutHandle = setTimeout(() => {
+      console.warn(
+        `[monitor] Shutdown timeout reached with ${inFlight} operation(s) ` +
+          `still in flight — forcing exit.`
+      );
+      resolve();
+    }, SHUTDOWN_TIMEOUT_MS);
+  });
+
+  await Promise.race([waitForInFlight(), timeout]);
+  clearTimeout(timeoutHandle);
+
+  console.log("[monitor] Shutdown complete.");
+  process.exit(0);
+}
+
+process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+process.on("SIGINT", () => gracefulShutdown("SIGINT"));
 
 main().catch((err) => {
   console.error("[monitor] Fatal error:", err);

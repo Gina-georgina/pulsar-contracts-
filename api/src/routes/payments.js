@@ -1,8 +1,28 @@
 import { Router } from "express";
+import rateLimit from "express-rate-limit";
 import { nativeToScVal, scValToNative, xdr } from "@stellar/stellar-sdk";
-import { invoke, view } from "../contractClient.js";
+import { invoke, view, validateStellarAddress } from "../contractClient.js";
 
 const router = Router();
+
+const PAYMENTS_RPM = parseInt(process.env.RATE_LIMIT_PAYMENTS_RPM, 10) || 20;
+
+const paymentsLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: PAYMENTS_RPM,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: (req, res, next, options) => {
+    const resetTime = req.rateLimit?.resetTime;
+    const retryAfter = resetTime
+      ? Math.max(0, Math.ceil((new Date(resetTime).getTime() - Date.now()) / 1000))
+      : Math.ceil(options.windowMs / 1000);
+    res.set("Retry-After", String(retryAfter));
+    res.status(429).json({
+      error: { code: "TooManyRequests", message: "Too many payment requests, please retry later" },
+    });
+  },
+});
 
 /**
  * Resolve the correlation ID for the current request. The request-ID
@@ -21,11 +41,22 @@ function res_getRequestId(req) {
  * POST /api/payments
  * Body: { payer, order: { order_id, merchant_address, payer, token, amount, description, expires_at }, signature }
  */
-router.post("/", async (req, res, next) => {
+router.post("/", paymentsLimiter, async (req, res, next) => {
   try {
     const { payer, order, signature } = req.body;
     if (!payer || !order || !signature) {
-      return res.status(422).json({ error: { code: "InvalidInput", message: "Missing required fields" } });
+      throw new ApiError(422, "InvalidInput", "Missing required fields");
+    }
+    const addressFields = [
+      ["payer", payer],
+      ["order.merchant_address", order.merchant_address],
+      ["order.payer", order.payer],
+      ["order.token", order.token],
+    ];
+    for (const [field, value] of addressFields) {
+      if (!validateStellarAddress(value)) {
+        return res.status(422).json({ error: { code: "InvalidAddress", message: `${field} is not a valid Stellar address` } });
+      }
     }
     const requestIdValue = requestId(req);
     req.log?.info?.({ requestId: requestIdValue, action: "process_payment" }, "Processing payment");
@@ -44,6 +75,65 @@ router.post("/", async (req, res, next) => {
   }
 });
 
+const MAX_BATCH_SIZE = 50;
+
+/**
+ * POST /api/payments/batch
+ * Body: { payer, orders: [{ order_id, merchant_address, payer, token, amount, description, expires_at, signature }] }
+ * Accepts up to 50 orders; each is submitted as a separate Soroban transaction.
+ */
+router.post("/batch", async (req, res, next) => {
+  try {
+    const { payer, orders } = req.body;
+    if (!payer || !Array.isArray(orders)) {
+      return res.status(422).json({ error: { code: "InvalidInput", message: "Missing required fields: payer and orders array" } });
+    }
+    if (orders.length === 0) {
+      return res.status(422).json({ error: { code: "InvalidInput", message: "orders array must not be empty" } });
+    }
+    if (orders.length > MAX_BATCH_SIZE) {
+      return res.status(422).json({
+        error: { code: "InvalidInput", message: `Batch size exceeds limit of ${MAX_BATCH_SIZE} orders` },
+      });
+    }
+
+    const results = [];
+    for (let i = 0; i < orders.length; i++) {
+      const order = orders[i];
+      const orderId = order?.order_id;
+      try {
+        if (!order || !order.order_id || !order.merchant_address || !order.payer || !order.token || order.amount == null || !order.signature) {
+          throw Object.assign(new Error("Missing required order fields"), { code: "InvalidInput" });
+        }
+        const txHash = await invoke("process_payment_with_signature", [
+          nativeToScVal(order.payer, { type: "address" }),
+          orderToScVal(order),
+          nativeToScVal(Buffer.from(order.signature, "hex"), { type: "bytes" }),
+        ]);
+        results.push({ index: i, order_id: orderId, success: true, tx_hash: txHash ?? null });
+      } catch (err) {
+        results.push({
+          index: i,
+          order_id: orderId ?? null,
+          success: false,
+          error: {
+            code: err?.code ?? "PaymentFailed",
+            message: err?.message ?? "Payment processing failed",
+          },
+        });
+      }
+    }
+
+    const succeeded = results.filter((r) => r.success).length;
+    res.status(200).json({
+      results,
+      summary: { total: results.length, succeeded, failed: results.length - succeeded },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 /**
  * GET /api/payments/:id
  * Query: { caller }
@@ -52,7 +142,10 @@ router.get("/:id", async (req, res, next) => {
   try {
     const { caller } = req.query;
     if (!caller) {
-      return res.status(422).json({ error: { code: "InvalidInput", message: "caller query param required" } });
+      throw new ApiError(422, "InvalidInput", "caller query param required");
+    }
+    if (!validateStellarAddress(caller)) {
+      return res.status(422).json({ error: { code: "InvalidAddress", message: "caller is not a valid Stellar address" } });
     }
     const requestIdValue = requestId(req);
     req.log?.info?.({ requestId: requestIdValue, action: "get_payment_by_id" }, "Fetching payment");
@@ -78,7 +171,10 @@ router.get("/", async (req, res, next) => {
   try {
     const { merchant, cursor, limit = 10, date_start, date_end, amount_min, amount_max, status = "Any", sort_field = "Date", sort_order = "Descending" } = req.query;
     if (!merchant) {
-      return res.status(422).json({ error: { code: "InvalidInput", message: "merchant query param required" } });
+      throw new ApiError(422, "InvalidInput", "merchant query param required");
+    }
+    if (!validateStellarAddress(merchant)) {
+      return res.status(422).json({ error: { code: "InvalidAddress", message: "merchant is not a valid Stellar address" } });
     }
 
     const filter = buildFilter({ date_start, date_end, amount_min, amount_max, status });

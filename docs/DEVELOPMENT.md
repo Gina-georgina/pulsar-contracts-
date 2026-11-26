@@ -9,6 +9,7 @@ This guide provides instructions for setting up a development environment and wo
 - [Building](#building)
 - [Testing](#testing)
 - [Local Network](#local-network)
+- [Docker Compose Health Checks](#docker-compose-health-checks)
 - [Environment Seeding](#environment-seeding)
 - [Debugging](#debugging)
 - [Common Tasks](#common-tasks)
@@ -157,6 +158,76 @@ stellar network container restart local
 ```bash
 stellar network container logs local
 ```
+
+## Docker Compose Health Checks
+
+The `docker-compose.yml` stack uses health checks to prevent services from starting before their dependencies are ready.
+
+### PostgreSQL Health Check
+
+The `postgres` service defines a `healthcheck` that runs `pg_isready` inside the container:
+
+```yaml
+services:
+  postgres:
+    image: postgres:16-alpine
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-pulsar} -d ${POSTGRES_DB:-pulsar}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+```
+
+Postgres is only marked `healthy` once `pg_isready` succeeds, so dependent services never connect to a database that is still initializing.
+
+### Service Dependencies
+
+The `indexer` and `api` services wait for PostgreSQL to become healthy before starting:
+
+```yaml
+services:
+  indexer:
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    depends_on:
+      postgres:
+        condition: service_healthy
+```
+
+If the database fails to become healthy within the configured retries, `docker compose up` reports the failure instead of leaving services in a crash loop that requires manual restarts.
+
+### Health Endpoints
+
+The `indexer` and `webhook` services expose an HTTP `/health` endpoint that returns `200 OK` when the service is ready:
+
+```bash
+# Indexer health
+curl -f http://localhost:3001/health
+
+# Webhook service health
+curl -f http://localhost:3002/health
+```
+
+These endpoints are also used by the containers' own `healthcheck` blocks, so `docker compose ps` reflects their readiness.
+
+### Inspecting Health Status
+
+```bash
+# Show container status, including health
+docker compose ps
+
+# Inspect the raw health state of a specific service
+docker inspect --format '{{json .State.Health}}' $(docker compose ps -q postgres)
+
+# Follow health check logs
+docker compose logs -f postgres indexer webhook
+```
+
+A healthy stack shows `(healthy)` next to each service in `docker compose ps`. Services still starting show `(health: starting)`, and failing checks show `(unhealthy)`.
 
 ## Environment Seeding
 

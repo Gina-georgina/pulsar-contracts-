@@ -174,6 +174,38 @@
       "outputs": [{ "type": "RefundStatus" }]
     },
     {
+      "name": "get_refund_page",
+      "doc": "Returns a page of refunds using cursor-based pagination. Replaces the deprecated get_all_refunds (see ADR-0002).",
+      "inputs": [
+        { "name": "cursor", "type": "Option<Bytes>", "doc": "Opaque cursor from a previous page. None starts from the beginning." },
+        { "name": "limit",  "type": "u32",           "doc": "Maximum number of refunds to return. Clamped to the contract's max page size." }
+      ],
+      "outputs": [{ "type": "RefundPage" }]
+    },
+    {
+      "name": "get_all_refunds",
+      "doc": "DEPRECATED: loads the full refund list into memory and is unbounded. Use get_refund_page instead. Will be removed in a future version.",
+      "deprecated": true,
+      "inputs": [],
+      "outputs": [{ "type": "Vec<Bytes>" }]
+    },
+    {
+      "name": "set_refund_window",
+      "doc": "Admin only. Sets the refund window and grace buffer (in seconds) stored in instance storage. Defaults to 2,592,000 (30 days) window and the existing grace buffer on first access.",
+      "inputs": [
+        { "name": "admin",             "type": "Address" },
+        { "name": "window_secs",       "type": "u64" },
+        { "name": "grace_buffer_secs", "type": "u64" }
+      ],
+      "outputs": []
+    },
+    {
+      "name": "get_refund_window",
+      "doc": "Returns the configured refund window and grace buffer in seconds. Falls back to the compile-time defaults if never set.",
+      "inputs": [],
+      "outputs": [{ "type": "RefundWindowConfig" }]
+    },
+    {
       "name": "initiate_multisig_payment",
       "doc": "Creates a multisig payment that requires all listed signers to sign before execution.",
       "inputs": [
@@ -338,6 +370,21 @@
         { "name": "total",       "type": "u32" }
       ]
     },
+    "RefundPage": {
+      "kind": "struct",
+      "fields": [
+        { "name": "records",     "type": "Vec<RefundRecord>" },
+        { "name": "next_cursor", "type": "Option<Bytes>", "doc": "Opaque cursor. Encode as base64 for textual transport. None means no further pages." },
+        { "name": "total",       "type": "u32" }
+      ]
+    },
+    "RefundWindowConfig": {
+      "kind": "struct",
+      "fields": [
+        { "name": "window_secs",       "type": "u64" },
+        { "name": "grace_buffer_secs", "type": "u64" }
+      ]
+    },
     "GlobalStats": {
       "kind": "struct",
       "fields": [
@@ -459,6 +506,14 @@
       "fields": [
         { "name": "new_wasm_hash", "type": "BytesN<32>" }
       ]
+    },
+    {
+      "name": "refund_window_updated",
+      "emitted_by": "set_refund_window",
+      "fields": [
+        { "name": "window_secs",       "type": "u64" },
+        { "name": "grace_buffer_secs", "type": "u64" }
+      ]
     }
   ],
   "errors": [
@@ -483,6 +538,7 @@
     { "code": 41, "name": "MultisigAlreadySigned",       "description": "This signer has already signed — safe to treat as idempotent" },
     { "code": 42, "name": "MultisigAlreadyExecuted",     "description": "Multisig payment has already been executed — safe to treat as idempotent" },
     { "code": 43, "name": "InsufficientSignatures",      "description": "Not all required signers have signed" },
-    { "code": 50, "name": "InvalidInput",                "description": "General input validation failure" }
+    { "code": 50, "name": "InvalidInput",                "description": "General input validation failure" },
+    { "code": 51, "name": "InvalidRefundWindow",         "description": "Refund window or grace buffer is outside the allowed bounds" }
   ]
 }

@@ -69,4 +69,11 @@ pub enum PaymentError {
     /// Enable the allowlist with `set_token_allowlist_mode` and add approved
     /// tokens with `add_allowed_token` before processing payments.
     TokenNotAllowed = 71,
+
+    // Feature flags (MISC-034)
+    /// The feature flag gating this function is disabled.
+    /// The admin can enable it at runtime with `set_feature_flag`; the flag
+    /// name is reported in the error context (e.g. `subscriptions_enabled`,
+    /// `token_allowlist_enforced`). See `docs/FEATURE_FLAGS.md`.
+    FeatureFlagDisabled = 72,
 }
