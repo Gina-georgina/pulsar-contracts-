@@ -7,6 +7,8 @@ on:
     branches: [main, develop]
   schedule:
     - cron: '0 6 * * 1'  # Weekly on Monday at 06:00 UTC
+    - cron: '0 3 * * *'  # Nightly at 03:00 UTC — fuzz run (T-023)
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always

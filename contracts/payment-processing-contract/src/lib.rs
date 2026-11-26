@@ -55,6 +55,7 @@ impl PaymentContract {
     /// One-time admin initialisation. Stores the first admin address.
     pub fn set_admin(env: Env, admins: Vec<Address>, threshold: u32) -> Result<(), PaymentError> {
         storage::bump_instance_ttl(&env);
+        if storage::is_paused(&env) { return Err(PaymentError::ContractPaused); }
         if storage::get_admin_config(&env).is_some() || storage::get_admin(&env).is_some() {
             return Err(PaymentError::AdminAlreadySet);
         }
@@ -95,6 +96,7 @@ impl PaymentContract {
         new_admin: Address,
     ) -> Result<(), PaymentError> {
         storage::bump_instance_ttl(&env);
+        if storage::is_paused(&env) { return Err(PaymentError::ContractPaused); }
         // Require auth from both parties — proves the new key is live.
         current_admin.require_auth();
         new_admin.require_auth();
@@ -128,6 +130,7 @@ impl PaymentContract {
 
     pub fn upgrade(env: Env, admin: Address, new_wasm_hash: BytesN<32>) -> Result<(), PaymentError> {
         storage::bump_instance_ttl(&env);
+        if storage::is_paused(&env) { return Err(PaymentError::ContractPaused); }
         helper::require_admin(&env, &admin)?;
         env.deployer().update_current_contract_wasm(new_wasm_hash);
         Ok(())
@@ -158,6 +161,7 @@ impl PaymentContract {
         new_threshold: u32,
     ) -> Result<(), PaymentError> {
         storage::bump_instance_ttl(&env);
+        if storage::is_paused(&env) { return Err(PaymentError::ContractPaused); }
         // The change must be authorised by the existing multi-sig.
         helper::require_multi_admin(&env, current_admins)?;
         if new_admins.is_empty() {
@@ -357,6 +361,7 @@ impl PaymentContract {
         tier: MerchantTier,
     ) -> Result<(), PaymentError> {
         storage::bump_instance_ttl(&env);
+        if storage::is_paused(&env) { return Err(PaymentError::ContractPaused); }
         helper::require_multi_admin(&env, admins)?;
         let mut merchant = storage::get_merchant(&env, &merchant_address)
             .ok_or(PaymentError::MerchantNotFound)?;
@@ -404,6 +409,7 @@ impl PaymentContract {
         enabled: bool,
     ) -> Result<(), PaymentError> {
         storage::bump_instance_ttl(&env);
+        if storage::is_paused(&env) { return Err(PaymentError::ContractPaused); }
         helper::require_multi_admin(&env, admins)?;
         storage::set_whitelist_enabled(&env, enabled);
         Ok(())
@@ -427,6 +433,7 @@ impl PaymentContract {
         merchant_address: Address,
     ) -> Result<(), PaymentError> {
         storage::bump_instance_ttl(&env);
+        if storage::is_paused(&env) { return Err(PaymentError::ContractPaused); }
         helper::require_multi_admin(&env, admins)?;
         storage::set_whitelisted(&env, &merchant_address, true);
         Ok(())
@@ -450,6 +457,7 @@ impl PaymentContract {
         enabled: bool,
     ) -> Result<(), PaymentError> {
         storage::bump_instance_ttl(&env);
+        if storage::is_paused(&env) { return Err(PaymentError::ContractPaused); }
         helper::require_multi_admin(&env, admins)?;
         storage::set_token_allowlist_enabled(&env, enabled);
         env.events().publish(
@@ -473,6 +481,7 @@ impl PaymentContract {
         token: Address,
     ) -> Result<(), PaymentError> {
         storage::bump_instance_ttl(&env);
+        if storage::is_paused(&env) { return Err(PaymentError::ContractPaused); }
         helper::require_multi_admin(&env, admins)?;
         storage::set_token_allowed(&env, &token, true);
         env.events().publish(
@@ -495,6 +504,7 @@ impl PaymentContract {
         token: Address,
     ) -> Result<(), PaymentError> {
         storage::bump_instance_ttl(&env);
+        if storage::is_paused(&env) { return Err(PaymentError::ContractPaused); }
         helper::require_multi_admin(&env, admins)?;
         storage::set_token_allowed(&env, &token, false);
         env.events().publish(
@@ -578,6 +588,7 @@ impl PaymentContract {
         admin_authorizers: Option<Vec<Address>>,
     ) -> Result<(), PaymentError> {
         storage::bump_instance_ttl(&env);
+        if storage::is_paused(&env) { return Err(PaymentError::ContractPaused); }
         if let Some(admins) = admin_authorizers {
             helper::require_multi_admin(&env, admins)?;
         } else {
@@ -624,6 +635,7 @@ impl PaymentContract {
         contact_info: String,
     ) -> Result<(), PaymentError> {
         storage::bump_instance_ttl(&env);
+        if storage::is_paused(&env) { return Err(PaymentError::ContractPaused); }
         merchant_address.require_auth();
         helper::validate_merchant_fields(&name, &description, &contact_info)?;
         let mut merchant =
@@ -662,6 +674,7 @@ impl PaymentContract {
         signing_public_key: Option<BytesN<32>>,
     ) -> Result<(), PaymentError> {
         storage::bump_instance_ttl(&env);
+        if storage::is_paused(&env) { return Err(PaymentError::ContractPaused); }
         merchant_address.require_auth();
         let mut merchant =
             storage::get_merchant(&env, &merchant_address).ok_or(PaymentError::MerchantNotFound)?;
