@@ -1,19 +1,19 @@
 import React, { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { PayerDashboard } from "./components/PayerDashboard";
-import { MerchantRegistrationWizard } from "./components/MerchantRegistrationWizard";
+import { MobileNav } from "./components/MobileNav";
+import "./styles/theme.css";
 
-function App() {
-  const [showMerchantWizard, setShowMerchantWizard] = useState(false);
+const navItems = [
+  { label: "Dashboard", href: "#dashboard" },
+  { label: "Payers", href: "#payers" },
+  { label: "Claims", href: "#claims" },
+  { label: "Settings", href: "#settings" },
+];
 
-  return (
-    <>
-      <PayerDashboard onRegisterAsMerchant={() => setShowMerchantWizard(true)} />
-      {showMerchantWizard && (
-        <MerchantRegistrationWizard onClose={() => setShowMerchantWizard(false)} />
-      )}
-    </>
-  );
-}
-
-createRoot(document.getElementById("root")!).render(<App />);
+createRoot(document.getElementById("root")!).render(
+  <>
+    <MobileNav items={navItems} />
+    <PayerDashboard />
+  </>
+);

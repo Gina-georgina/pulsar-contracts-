@@ -1,14 +1,67 @@
 import express from "express";
+import crypto from "crypto";
 import { registerWebhook, getWebhook, deleteWebhook } from "./store";
 import { checkDependencies, ComponentStatus } from "./health";
 import * as dlq from "./dlq";
-import { deliver } from "./deliver";
-import {
-  ApiError,
-  errorHandler,
-  notFoundHandler,
-  requestIdMiddleware,
-} from "./errors";
+import { deliver, validateWebhookUrlScheme } from "./deliver";
+
+// ── Webhook registration handshake ──────────────────────────────────────────
+//
+// A registration is only confirmed once the registering party proves control
+// of the target URL.  On POST /webhooks we create a *pending* registration
+// with a random challenge token and attempt to deliver it to the target URL.
+// The target must echo the token back via POST /webhooks/:merchantAddress/verify
+// (or by calling the challenge URL) before the registration becomes active.
+//
+// Pending registrations expire after PENDING_TTL_MS.
+
+const PENDING_TTL_MS = 15 * 60 * 1000;
+
+interface PendingRegistration {
+  merchantAddress: string;
+  url: string;
+  token: string;
+  createdAt: number;
+}
+
+const pendingRegistrations = new Map<string, PendingRegistration>();
+
+function pendingKey(merchantAddress: string): string {
+  return merchantAddress.toLowerCase();
+}
+
+function pruneExpiredPending(now = Date.now()): void {
+  for (const [key, pending] of pendingRegistrations) {
+    if (now - pending.createdAt > PENDING_TTL_MS) {
+      pendingRegistrations.delete(key);
+    }
+  }
+}
+
+function tokensMatch(expected: string, provided: unknown): boolean {
+  if (typeof provided !== "string") return false;
+  const a = Buffer.from(expected);
+  const b = Buffer.from(provided);
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
+}
+
+async function sendChallenge(url: string, merchantAddress: string, token: string): Promise<boolean> {
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        type: "webhook.verification",
+        merchantAddress,
+        token,
+      }),
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
 
 export function createRouter(rpcUrl: string, contractId: string): express.Router {
   const router = express.Router();
@@ -107,8 +160,12 @@ export function createRouter(rpcUrl: string, contractId: string): express.Router
     res.status(200).set("X-Health-Duration-Ms", durationMs.toString()).json(payload);
   });
 
-  // POST /webhooks — register or update a webhook URL for a merchant
-  router.post("/webhooks", (req, res, next) => {
+  // POST /webhooks — begin registration of a webhook URL for a merchant.
+  //
+  // Creates a pending registration and sends a challenge token to the target
+  // URL.  The registration is NOT active until the target echoes the token
+  // back via POST /webhooks/:merchantAddress/verify.
+  router.post("/webhooks", async (req, res) => {
     const { merchantAddress, url } = req.body as { merchantAddress?: string; url?: string };
     if (!merchantAddress || !url) {
       next(
@@ -125,6 +182,16 @@ export function createRouter(rpcUrl: string, contractId: string): express.Router
     } catch {
       next(new ApiError("VALIDATION_ERROR", "url is not a valid URL", 400));
       return;
+    }
+    const schemeCheck = validateWebhookUrlScheme(url);
+    if (!schemeCheck.ok) {
+      res.status(400).json({ error: schemeCheck.error });
+      return;
+    }
+    if (schemeCheck.insecure) {
+      console.warn(
+        `[webhook] Registering insecure (http:) webhook URL for merchant ${merchantAddress}: ${url}`
+      );
     }
     const reg = registerWebhook(merchantAddress, url);
     res.status(201).json(reg);

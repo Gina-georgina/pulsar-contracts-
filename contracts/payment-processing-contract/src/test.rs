@@ -1664,6 +1664,101 @@ fn test_dispute_refund_unauthorized_fails() {
     assert_eq!(result, Err(Ok(PaymentError::DisputeUnauthorized)));
 }
 
+// ── T-021: full lifecycle integration test ────────────────────────────────────
+
+/// T-021: End-to-end lifecycle covering merchant registration → payment →
+/// refund initiation → merchant rejection → payer dispute → admin resolution.
+/// Intermediate state is asserted after every step via `get_payment_by_id` and
+/// `get_refund`.
+#[test]
+fn test_full_payment_refund_dispute_lifecycle() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let merchant = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let token = create_token(&env, &admin);
+
+    client.set_admin(&admins(&env, &admin), &1);
+
+    // 1. Register merchant.
+    client.register_merchant(
+        &merchant,
+        &str(&env, "Lifecycle Store"),
+        &str(&env, "desc"),
+        &str(&env, "lifecycle@store.com"),
+        &MerchantCategory::Retail,
+        &None,
+    );
+    let m = client.get_merchant(&merchant);
+    assert!(m.active);
+    assert_eq!(m.name, str(&env, "Lifecycle Store"));
+
+    // 2. Process payment.
+    mint(&env, &token, &payer, 5000);
+    let order = make_order(&env, &merchant, &payer, &token);
+    let (_pk, sig) = sign_order(&env, &order);
+    client.process_payment_with_signature(&payer, &order, &sig, &zero_key(&env));
+
+    let record = client.get_payment_by_id(&payer, &bytes(&env, "ORDER_001"));
+    assert_eq!(record.status, PaymentStatus::Completed);
+    assert_eq!(record.amount, 1000);
+    assert_eq!(record.refunded_amount, 0);
+    assert_eq!(record.pending_refund_amount, 0);
+
+    // 3. Initiate refund.
+    let refund_id = bytes(&env, "REFUND_LIFECYCLE");
+    client.initiate_refund(
+        &payer,
+        &refund_id,
+        &bytes(&env, "ORDER_001"),
+        &500,
+        &str(&env, "Customer request"),
+    );
+
+    let refund = client.get_refund(&refund_id);
+    assert_eq!(refund.status, RefundStatus::Pending);
+    assert_eq!(refund.amount, 500);
+    assert_eq!(refund.order_id, bytes(&env, "ORDER_001"));
+
+    let record = client.get_payment_by_id(&payer, &bytes(&env, "ORDER_001"));
+    assert_eq!(record.status, PaymentStatus::Completed);
+    assert_eq!(record.refunded_amount, 0);
+    assert_eq!(record.pending_refund_amount, 500);
+
+    // 4. Merchant rejects the refund.
+    client.reject_refund(&merchant, &refund_id, &None);
+
+    let refund = client.get_refund(&refund_id);
+    assert_eq!(refund.status, RefundStatus::Rejected);
+
+    let record = client.get_payment_by_id(&payer, &bytes(&env, "ORDER_001"));
+    assert_eq!(record.status, PaymentStatus::Completed);
+    assert_eq!(record.refunded_amount, 0);
+    assert_eq!(record.pending_refund_amount, 0);
+
+    // 5. Payer disputes the rejection.
+    client.dispute_refund(&payer, &refund_id, &str(&env, "Merchant refused valid refund"));
+
+    let refund = client.get_refund(&refund_id);
+    assert_eq!(refund.status, RefundStatus::Disputed);
+
+    let record = client.get_payment_by_id(&payer, &bytes(&env, "ORDER_001"));
+    assert_eq!(record.status, PaymentStatus::Completed);
+    assert_eq!(record.refunded_amount, 0);
+    assert_eq!(record.pending_refund_amount, 0);
+
+    // 6. Admin resolves the dispute in the payer's favour.
+    client.resolve_dispute(&admins(&env, &admin), &refund_id, &true);
+
+    let refund = client.get_refund(&refund_id);
+    assert_eq!(refund.status, RefundStatus::Completed);
+
+    let record = client.get_payment_by_id(&payer, &bytes(&env, "ORDER_001"));
+    assert_eq!(record.status, PaymentStatus::PartiallyRefunded);
+    assert_eq!(record.refunded_amount, 500);
+    assert_eq!(record.pending_refund_amount, 0);
+}
+
 // ── Multisig tests ────────────────────────────────────────────────────────────
 
 #[test]
@@ -1985,8 +2080,10 @@ fn test_cancel_subscription_wrong_payer_fails() {
     );
 }
 
+/// SC-037: Cancelling a subscription that has already been cancelled must be
+/// rejected with `SubscriptionNotActive` (idempotency guard).
 #[test]
-fn test_cancel_already_cancelled_fails() {
+fn test_cancel_already_cancelled_subscription_fails() {
     let (env, client) = setup();
     let admin = Address::generate(&env);
     let merchant = Address::generate(&env);
@@ -1996,7 +2093,10 @@ fn test_cancel_already_cancelled_fails() {
     client.register_merchant(&merchant, &str(&env, "Store"), &str(&env, "desc"), &str(&env, "c@c.com"), &MerchantCategory::Retail, &None);
     let sub_id = bytes(&env, "SUB_001");
     client.create_subscription(&payer, &merchant, &sub_id, &make_plan(&env, &token));
+    // First cancellation succeeds.
     client.cancel_subscription(&payer, &sub_id);
+    assert_eq!(client.get_subscription(&sub_id).status, crate::types::SubscriptionStatus::Cancelled);
+    // Second cancellation must fail with SubscriptionNotActive.
     assert_eq!(
         client.try_cancel_subscription(&payer, &sub_id),
         Err(Ok(PaymentError::SubscriptionNotActive))
@@ -2279,6 +2379,79 @@ fn test_get_subscription_not_found_fails() {
     assert_eq!(
         client.try_get_subscription(&bytes(&env, "NONEXISTENT")),
         Err(Ok(PaymentError::SubscriptionNotFound))
+    );
+}
+
+/// SC-038: process_subscription_payment must enforce the token allowlist.
+/// A subscription created with a token that is not on the allowlist must be
+/// rejected at charge time, mirroring process_payment_with_signature.
+#[test]
+fn test_process_subscription_payment_non_allowlisted_token_fails() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let merchant = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let allowed_token = create_token(&env, &admin);
+    let blocked_token = create_token(&env, &admin);
+
+    client.set_admin(&admins(&env, &admin), &1);
+    client.register_merchant(
+        &merchant,
+        &str(&env, "Store"),
+        &str(&env, "desc"),
+        &str(&env, "c@c.com"),
+        &MerchantCategory::Retail,
+        &None,
+    );
+    mint(&env, &blocked_token, &payer, 5000);
+
+    // Enable the allowlist and only allow `allowed_token`.
+    client.set_token_allowlist_mode(&admins(&env, &admin), &true);
+    client.add_token_to_allowlist(&admins(&env, &admin), &allowed_token);
+
+    let sub_id = bytes(&env, "SUB_BLOCKED");
+    client.create_subscription(&payer, &merchant, &sub_id, &make_plan(&env, &blocked_token));
+
+    env.ledger().with_mut(|l| l.timestamp = 1000);
+    assert_eq!(
+        client.try_process_subscription_payment(&payer, &sub_id),
+        Err(Ok(PaymentError::TokenNotAllowed))
+    );
+}
+
+/// SC-042: a merchant cannot accumulate more than MAX_SUBSCRIPTIONS_PER_MERCHANT
+/// subscriptions; the next create_subscription must return InvalidInput.
+#[test]
+fn test_create_subscription_per_merchant_limit_enforced() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let merchant = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let token = create_token(&env, &admin);
+
+    client.set_admin(&admins(&env, &admin), &1);
+    client.register_merchant(
+        &merchant,
+        &str(&env, "Store"),
+        &str(&env, "desc"),
+        &str(&env, "c@c.com"),
+        &MerchantCategory::Retail,
+        &None,
+    );
+
+    let plan = make_plan(&env, &token);
+    for i in 0..crate::MAX_SUBSCRIPTIONS_PER_MERCHANT {
+        let sub_id = Bytes::from_slice(&env, alloc::format!("SUB_{:05}", i).as_bytes());
+        client.create_subscription(&payer, &merchant, &sub_id, &plan);
+    }
+
+    let overflow_id = Bytes::from_slice(
+        &env,
+        alloc::format!("SUB_{:05}", crate::MAX_SUBSCRIPTIONS_PER_MERCHANT).as_bytes(),
+    );
+    assert_eq!(
+        client.try_create_subscription(&payer, &merchant, &overflow_id, &plan),
+        Err(Ok(PaymentError::InvalidInput))
     );
 }
 

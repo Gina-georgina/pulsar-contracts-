@@ -25,6 +25,7 @@ use soroban_sdk::{
 use ed25519_dalek::{Signer, SigningKey};
 
 use crate::{
+    error::PaymentError,
     types::{MerchantCategory, PaymentOrder},
     PaymentContract, PaymentContractClient,
 };
@@ -243,4 +244,93 @@ fn test_t004_date_filter_end_only() {
 
     assert_eq!(stats.total_payments, 2);
     assert_eq!(stats.total_volume, 300); // 100 + 200
+}
+
+// ── T-030: stats unchanged while paused ──────────────────────────────────────
+
+/// Processing a payment, then pausing, then attempting a (blocked) payment,
+/// then unpausing must leave global stats reflecting only the pre-pause
+/// payment. This verifies that stats accumulation side effects do not run
+/// while the contract is paused.
+#[test]
+fn test_t030_global_stats_unchanged_while_paused() {
+    let (env, client) = setup();
+
+    let admin = Address::generate(&env);
+    let merchant = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let token = create_token(&env, &admin);
+
+    client.set_admin(&admin_vec(&env, &admin), &1);
+    client.register_merchant(
+        &merchant,
+        &s(&env, "Store"),
+        &s(&env, "desc"),
+        &s(&env, "c@c.com"),
+        &MerchantCategory::Retail,
+        &None,
+    );
+    mint(&env, &token, &payer, 10_000);
+
+    // First payment — processed before pause
+    env.ledger().with_mut(|l| l.timestamp = 1_000);
+    let order1 = PaymentOrder {
+        order_id: b(&env, "T030_001"),
+        merchant_address: merchant.clone(),
+        payer: payer.clone(),
+        token: token.clone(),
+        amount: 100,
+        description: s(&env, "desc"),
+        expires_at: 0,
+    };
+    let (_pk1, sig1) = sign_order(&env, &order1);
+    client.process_payment_with_signature(&payer, &order1, &sig1, &zero_key(&env));
+
+    // Snapshot stats after the pre-pause payment
+    let pre_pause = client.get_global_payment_stats(
+        &admin_vec(&env, &admin),
+        &None,
+        &None,
+    );
+    assert_eq!(pre_pause.total_payments, 1);
+    assert_eq!(pre_pause.total_volume, 100);
+
+    // Pause the contract
+    client.pause(&admin);
+    assert!(client.is_paused());
+
+    // Attempt a second payment while paused — must be rejected
+    env.ledger().with_mut(|l| l.timestamp = 2_000);
+    let order2 = PaymentOrder {
+        order_id: b(&env, "T030_002"),
+        merchant_address: merchant.clone(),
+        payer: payer.clone(),
+        token: token.clone(),
+        amount: 200,
+        description: s(&env, "desc"),
+        expires_at: 0,
+    };
+    let (_pk2, sig2) = sign_order(&env, &order2);
+    let result = client.try_process_payment_with_signature(
+        &payer,
+        &order2,
+        &sig2,
+        &zero_key(&env),
+    );
+    assert_eq!(result, Err(Ok(PaymentError::ContractPaused)));
+
+    // Unpause the contract
+    client.unpause(&admin);
+    assert!(!client.is_paused());
+
+    // Stats must still reflect only the pre-pause payment
+    let post_unpause = client.get_global_payment_stats(
+        &admin_vec(&env, &admin),
+        &None,
+        &None,
+    );
+    assert_eq!(post_unpause.total_payments, pre_pause.total_payments);
+    assert_eq!(post_unpause.total_volume, pre_pause.total_volume);
+    assert_eq!(post_unpause.total_refunds, pre_pause.total_refunds);
+    assert_eq!(post_unpause.total_refund_volume, pre_pause.total_refund_volume);
 }
