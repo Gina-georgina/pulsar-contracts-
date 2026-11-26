@@ -1855,8 +1855,10 @@ fn test_cancel_subscription_wrong_payer_fails() {
     );
 }
 
+/// SC-037: Cancelling a subscription that has already been cancelled must be
+/// rejected with `SubscriptionNotActive` (idempotency guard).
 #[test]
-fn test_cancel_already_cancelled_fails() {
+fn test_cancel_already_cancelled_subscription_fails() {
     let (env, client) = setup();
     let admin = Address::generate(&env);
     let merchant = Address::generate(&env);
@@ -1866,7 +1868,10 @@ fn test_cancel_already_cancelled_fails() {
     client.register_merchant(&merchant, &str(&env, "Store"), &str(&env, "desc"), &str(&env, "c@c.com"), &MerchantCategory::Retail, &None);
     let sub_id = bytes(&env, "SUB_001");
     client.create_subscription(&payer, &merchant, &sub_id, &make_plan(&env, &token));
+    // First cancellation succeeds.
     client.cancel_subscription(&payer, &sub_id);
+    assert_eq!(client.get_subscription(&sub_id).status, crate::types::SubscriptionStatus::Cancelled);
+    // Second cancellation must fail with SubscriptionNotActive.
     assert_eq!(
         client.try_cancel_subscription(&payer, &sub_id),
         Err(Ok(PaymentError::SubscriptionNotActive))
