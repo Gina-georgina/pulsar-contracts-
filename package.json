@@ -1,0 +1,13 @@
+{
+  "name": "webhook-platform",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Webhook platform monorepo",
+  "scripts": {
+    "docs:generate": "typedoc --options typedoc.json"
+  },
+  "devDependencies": {
+    "typedoc": "^0.25.13",
+    "typescript": "^5.4.5"
+  }
+}

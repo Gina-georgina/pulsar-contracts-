@@ -6,7 +6,9 @@
     "start": "node dist/index.js",
     "dev": "ts-node src/index.ts",
     "build": "tsc",
-    "test": "ts-node --test src/index.test.ts"
+    "migrate": "ts-node src/migrations/run.ts",
+    "test": "ts-node test/integration.test.ts",
+    "test:integration": "ts-node test/integration.test.ts"
   },
   "dependencies": {
     "@stellar/stellar-sdk": "^12.0.0",
