@@ -14,7 +14,7 @@
 /// - Performance monitoring
 
 use alloc::vec::Vec as RustVec;
-use soroban_sdk::{Address, Bytes, BytesN, Env, Vec};
+use soroban_sdk::{Address, Bytes, BytesN, Env, String, Vec};
 
 use crate::error::PaymentError;
 use crate::types::PaymentRecord;
@@ -146,6 +146,16 @@ pub fn create_archive_index(
         merchant_address,
         archived_at: current_time,
     }
+}
+
+/// Emit a `payment_archived` event for a cleaned-up payment record.
+///
+/// The event uses the topic `("payment_archived",)` and data `(order_id, archived_at)`
+/// so that off-chain consumers (indexer, analytics, webhook listener) can
+/// soft-delete the corresponding row.
+pub fn emit_payment_archived(env: &Env, order_id: &Bytes, archived_at: u64) {
+    let topics = (String::from_str(env, "payment_archived"),);
+    env.events().publish(topics, (order_id.clone(), archived_at));
 }
 
 /// Get archive statistics

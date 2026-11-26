@@ -4,6 +4,7 @@ import { deliver, WebhookPayload } from "./deliver";
 
 const WATCHED_EVENTS = new Set([
   "payment_processed",
+  "payment_archived",
   "refund_initiated",
   "refund_approved",
   "refund_rejected",
