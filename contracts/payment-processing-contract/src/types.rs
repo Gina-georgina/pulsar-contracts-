@@ -145,6 +145,30 @@ pub struct RefundRecord {
     pub dispute_reason: String,
 }
 
+/// A single page of refunds returned by `get_refund_page` (SC-052).
+///
+/// Replaces the unbounded `get_all_refunds` query, which loaded the entire
+/// refund index into memory in one call. Callers should iterate pages using
+/// `next_cursor` until it is `None`.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RefundPage {
+    pub records: Vec<RefundRecord>,
+    /// Opaque pagination cursor pointing to the last record on the page.
+    ///
+    /// Current format: raw `refund_id` bytes of the last record. Callers that
+    /// transport the cursor over textual channels (CLI, HTTP) should encode
+    /// it (for example as base64). The contract treats the cursor as an opaque
+    /// `Bytes` value and will start the next page after the matching
+    /// `refund_id`.
+    ///
+    /// NOTE: changing this format is a breaking change. Any future change
+    /// should use a versioned encoding and include a migration note in an ADR.
+    pub next_cursor: Option<Bytes>,
+    /// Total number of refunds matching the query, across all pages.
+    pub total: u32,
+}
+
 // ── Multisig ──────────────────────────────────────────────────────────────────
 
 #[contracttype]
@@ -326,7 +350,17 @@ pub enum DataKey {
     CleanupPeriod,
     DefaultMultisigExpiry,
     GlobalStats,
+    /// Deprecated (SC-052): flat list of all refund IDs. Superseded by the
+    /// paginated refund index below; retained only for migration/cleanup.
     AllRefunds,
+    /// Flat refund index list (paginated via `get_refund_page`, SC-052).
+    GlobalRefundIndex,
+    /// Refund window in seconds, stored in instance storage (SC-055).
+    /// Defaults to the legacy `REFUND_WINDOW` constant on first access.
+    RefundWindow,
+    /// Refund grace buffer in seconds, stored in instance storage (SC-055).
+    /// Defaults to the legacy `REFUND_GRACE_BUFFER` constant on first access.
+    RefundGraceBuffer,
     WhitelistEnabled,
     Whitelist(Address),
     OrderRefundCount(Bytes),

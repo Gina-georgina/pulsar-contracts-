@@ -206,6 +206,16 @@ All fields are optional. Omit or pass `null` to match all values.
 
 ---
 
+### `RefundPage` (struct)
+
+| Field         | Type                    | Description |
+|---|---|---|
+| `records`     | `Vec<RefundRecord>`     | Current page of results |
+| `next_cursor` | `Option<Bytes>`         | Opaque cursor — encode as base64 for textual transport. `null` = last page |
+| `total`       | `u32`                   | Total refunds (before pagination) |
+
+---
+
 ### `GlobalStats` (struct)
 
 | Field                 | Type   | Description |
@@ -472,7 +482,9 @@ Accessible by the merchant (own stats) or admin (any merchant).
 
 ### Refunds
 
-Refund window: **30 days + 1-hour grace buffer** from `paid_at`.
+Refund window: **30 days + 1-hour grace buffer** from `paid_at`. Both values are
+configurable by the admin via `set_refund_window` (see [Admin Config](#admin-config));
+the values above are the defaults applied on first access.
 
 #### `initiate_refund(caller, refund_id, order_id, amount, reason)`
 
@@ -491,6 +503,38 @@ Callable by merchant or admin.
 Transfers funds. Requires merchant auth. Refund must be in `Approved` state.
 
 #### `get_refund_status(refund_id: Bytes) → RefundStatus`
+
+---
+
+#### `get_refund_page(cursor, limit) → RefundPage`
+
+Returns a paginated, cursor-based page of refunds. This replaces the former
+`get_all_refunds`, which loaded the entire refund list into memory in a single
+call and has been **removed** (SC-052). Clients that previously called
+`get_all_refunds` must migrate to `get_refund_page`, iterating until
+`next_cursor` is `null`.
+
+| Parameter | Type            | Notes |
+|---|---|---|
+| `cursor`  | `Option<Bytes>` | `null` for first page |
+| `limit`   | `u32`           | Max 100 |
+
+**Returns**: `RefundPage`
+
+**Errors**: `InvalidInput` (limit out of range or malformed cursor)
+
+> **Migration**: `get_all_refunds` is deprecated and no longer available. To
+> fetch all refunds, loop over `get_refund_page`:
+>
+> ```typescript
+> let cursor: Uint8Array | null = null;
+> const all: RefundRecord[] = [];
+> do {
+>   const page = await contract.getRefundPage(cursor, 100);
+>   all.push(...page.records);
+>   cursor = page.next_cursor;
+> } while (cursor !== null);
+> ```
 
 ---
 
@@ -523,6 +567,35 @@ Removes payments older than the configured cleanup period.
 #### `set_payment_cleanup_period(admin: Address, period: u64)`
 
 Default: `7,776,000` seconds (90 days).
+
+---
+
+#### `set_refund_window(admin: Address, window_secs: u64, grace_buffer_secs: u64)`
+
+Admin only. Updates the refund window and grace buffer stored in contract
+instance storage. Previously these were compile-time constants
+(`REFUND_WINDOW`, `REFUND_GRACE_BUFFER`) that required a full redeployment to
+change (SC-055).
+
+| Parameter           | Type     | Notes |
+|---|---|---|
+| `admin`             | `Address`| Must be the contract admin |
+| `window_secs`       | `u64`    | Refund window in seconds |
+| `grace_buffer_secs` | `u64`    | Grace buffer added to the window, in seconds |
+
+**Defaults** (applied on first access when no value has been set):
+
+| Setting             | Default value | Equivalent |
+|---|---|---|
+| `window_secs`       | `2,592,000`   | 30 days |
+| `grace_buffer_secs` | `3,600`       | 1 hour |
+
+**Bounds validation**:
+
+- `window_secs` must be greater than `0` and at most `31,536,000` seconds (365 days).
+- `grace_buffer_secs` must be at most `604,800` seconds (7 days).
+
+**Errors**: `Unauthorized` (caller is not admin), `InvalidInput` (value out of bounds)
 
 ---
 
@@ -685,7 +758,7 @@ Emitted by `upgrade`.
 | 25   | `InsufficientBalance`         | Payer or merchant token balance too low for the transfer | No |
 | 30   | `RefundNotFound`              | Refund ID not found                                      | No |
 | 31   | `RefundAlreadyExists`         | Duplicate `refund_id` — treat as success on retry        | ✅ Yes |
-| 32   | `RefundWindowExpired`         | Past 30-day refund window                                | No |
+| 32   | `RefundWindowExpired`         | Past the configured refund window (default 30 days)      | No |
 | 33   | `RefundAmountExceedsPayment`  | Cumulative refund > original amount                      | No |
 | 34   | `RefundNotApproved`           | Refund not in Approved state                             | No |
 | 35   | `RefundAlreadyCompleted`      | Refund already completed or rejected                     | No |

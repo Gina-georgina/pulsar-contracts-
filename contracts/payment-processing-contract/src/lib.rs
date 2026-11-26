@@ -33,11 +33,10 @@ use soroban_sdk::{
 };
 
 use error::PaymentError;
-use storage::{REFUND_GRACE_BUFFER, REFUND_WINDOW};
 use types::{
     DataKey, GlobalStats, Merchant, MerchantCategory, MerchantStats, MultisigPayment,
     PaymentFilter, PaymentOrder, PaymentPage, PaymentReceipt, PaymentRecord, PaymentStatus,
-    RefundRecord, RefundStatus, SortField, SortOrder,
+    RefundPage, RefundRecord, RefundStatus, SortField, SortOrder,
 };
 
 /// Maximum number of subscriptions a single merchant may accumulate (SC-042).
@@ -264,6 +263,56 @@ impl PaymentContract {
     pub fn get_version(env: Env) -> u32 {
         storage::bump_instance_ttl(&env);
         storage::get_contract_version(&env)
+    }
+
+    /// Set the refund window and grace buffer used by `initiate_refund`. Admin only.
+    ///
+    /// Replaces the previously hardcoded `REFUND_WINDOW` / `REFUND_GRACE_BUFFER`
+    /// compile-time constants (SC-055). Values are stored in instance storage and
+    /// default to the original constants until this function is first called.
+    ///
+    /// # Parameters
+    /// - `admin` — Admin address; must be authenticated and satisfy the admin check.
+    /// - `window_secs` — Refund window in seconds. Must be within
+    ///   [`storage::MIN_REFUND_WINDOW`]..=[`storage::MAX_REFUND_WINDOW`].
+    /// - `grace_buffer_secs` — Grace buffer in seconds. Must be within
+    ///   [`storage::MIN_REFUND_GRACE_BUFFER`]..=[`storage::MAX_REFUND_GRACE_BUFFER`].
+    ///
+    /// # Errors
+    /// - [`PaymentError::Unauthorized`] if `admin` is not an admin.
+    /// - [`PaymentError::InvalidInput`] if either value is out of bounds.
+    pub fn set_refund_window(
+        env: Env,
+        admin: Address,
+        window_secs: u64,
+        grace_buffer_secs: u64,
+    ) -> Result<(), PaymentError> {
+        storage::bump_instance_ttl(&env);
+        helper::require_admin(&env, &admin)?;
+        if window_secs < storage::MIN_REFUND_WINDOW || window_secs > storage::MAX_REFUND_WINDOW {
+            return Err(PaymentError::InvalidInput);
+        }
+        if grace_buffer_secs < storage::MIN_REFUND_GRACE_BUFFER
+            || grace_buffer_secs > storage::MAX_REFUND_GRACE_BUFFER
+        {
+            return Err(PaymentError::InvalidInput);
+        }
+        storage::set_refund_window(&env, window_secs);
+        storage::set_refund_grace_buffer(&env, grace_buffer_secs);
+        env.events().publish(
+            (String::from_str(&env, "refund_window_set"),),
+            (window_secs, grace_buffer_secs),
+        );
+        Ok(())
+    }
+
+    /// Return the currently configured refund window and grace buffer, in seconds.
+    pub fn get_refund_window(env: Env) -> (u64, u64) {
+        storage::bump_instance_ttl(&env);
+        (
+            storage::get_refund_window(&env),
+            storage::get_refund_grace_buffer(&env),
+        )
     }
 
     /// Health check endpoint for monitoring systems (BE-007).
