@@ -38,6 +38,13 @@ use types::{
     RefundRecord, RefundStatus, SortField, SortOrder,
 };
 
+/// Maximum number of subscriptions a single merchant may accumulate (SC-042).
+///
+/// Bounds the size of `DataKey::MerchantSubscriptions` so that
+/// `list_subscriptions_by_merchant` cannot scan an unbounded list and exceed
+/// Soroban CPU/memory limits.
+pub const MAX_SUBSCRIPTIONS_PER_MERCHANT: u32 = 10_000;
+
 #[contract]
 pub struct PaymentContract;
 
