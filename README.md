@@ -17,6 +17,7 @@ Pulsar is a comprehensive payment-processing smart contract for the Stellar Soro
 | [API Reference](docs/api-reference.md) | All function signatures, parameter types, return types, and event schemas |
 | [Contract ABI (JSON)](docs/contract-abi.json) | Machine-readable ABI for tooling and code generation |
 | [Idempotency Guide](docs/IDEMPOTENCY_GUIDE.md) | Handling network retries and `PaymentAlreadyExists` safely |
+| [Subscription Guide](docs/SUBSCRIPTION_GUIDE.md) | Recurring-payment lifecycle and the off-chain scheduler requirements |
 
 ---
 

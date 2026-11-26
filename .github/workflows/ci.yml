@@ -303,6 +303,65 @@ jobs:
           fi
         working-directory: contracts/payment-processing-contract
 
+  # DO-028: Build the production Docker image and scan it for known OS and
+  # dependency vulnerabilities with Trivy. The job fails on any CRITICAL
+  # finding (exit-code 1) and uploads the full report as an artifact. It runs
+  # on push/PR and also on the weekly schedule (see `on.schedule` above), so
+  # newly disclosed CVEs in the base image are caught independently of PRs.
+  container-scan:
+    name: Container Image Scan (Trivy)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write  # required to upload SARIF results
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build production Docker image
+        run: |
+          docker build -t payment-processing-contract:${{ github.sha }} .
+
+      - name: Run Trivy vulnerability scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: payment-processing-contract:${{ github.sha }}
+          format: table
+          output: trivy-report.txt
+          severity: CRITICAL
+          ignore-unfixed: false
+          exit-code: '1'
+
+      - name: Run Trivy scan (SARIF for code scanning)
+        # Runs after the gating scan above; `if: always()` ensures the SARIF
+        # report is produced even when the gating scan failed on CRITICAL
+        # findings, so results are still visible in the Security tab.
+        if: always()
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: payment-processing-contract:${{ github.sha }}
+          format: sarif
+          output: trivy-results.sarif
+          severity: CRITICAL
+          ignore-unfixed: false
+          exit-code: '0'
+
+      - name: Upload Trivy scan report as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-report
+          path: |
+            trivy-report.txt
+            trivy-results.sarif
+          retention-days: 30
+
+      - name: Upload SARIF to GitHub code scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy-container
+
   security-audit:
     name: Security Audit
     runs-on: ubuntu-latest
