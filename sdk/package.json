@@ -17,7 +17,7 @@
   },
   "scripts": {
     "build": "tsc",
-    "test": "jest --passWithNoTests",
+    "test": "jest --coverage --passWithNoTests",
     "prepublishOnly": "npm run build"
   },
   "publishConfig": {
@@ -58,6 +58,7 @@
   "jest": {
     "preset": "ts-jest",
     "testEnvironment": "node",
-    "testMatch": ["**/__tests__/**/*.test.ts"]
+    "testMatch": ["**/__tests__/**/*.test.ts"],
+    "coverageDirectory": "coverage"
   }
 }
