@@ -9,6 +9,8 @@ const CONTRACT_ID = process.env.CONTRACT_ID ?? "";
 const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS ?? 5_000);
 const DATABASE_URL = process.env.DATABASE_URL ?? "";
 
+const SHUTDOWN_TIMEOUT_MS = 10_000;
+
 if (!CONTRACT_ID) {
   console.error("CONTRACT_ID environment variable is required");
   process.exit(1);

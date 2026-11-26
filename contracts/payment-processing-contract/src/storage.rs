@@ -496,10 +496,44 @@ pub fn set_default_multisig_expiry(env: &Env, expiry: u64) {
         .set(&DataKey::DefaultMultisigExpiry, &expiry);
 }
 
+// ── Feature flags (MISC-034) ──────────────────────────────────────────────────
+
+/// Feature flag name for subscription payments.
+pub const FLAG_SUBSCRIPTIONS_ENABLED: &str = "subscriptions_enabled";
+/// Feature flag name for token allowlist enforcement.
+pub const FLAG_TOKEN_ALLOWLIST_ENFORCED: &str = "token_allowlist_enforced";
+
+/// Returns the value of the named feature flag, defaulting to `false` when
+/// the flag has never been set. Flags live in instance storage so reads are
+/// O(1) and are covered by `bump_instance_ttl`.
+pub fn get_feature_flag(env: &Env, name: &str) -> bool {
+    let key = DataKey::FeatureFlag(soroban_sdk::String::from_str(env, name));
+    env.storage().instance().get(&key).unwrap_or(false)
+}
+
+/// Enable or disable the named feature flag. Callers must be admin-gated at
+/// the contract entry-point level; this helper performs no auth checks.
+pub fn set_feature_flag(env: &Env, name: &str, enabled: bool) {
+    let key = DataKey::FeatureFlag(soroban_sdk::String::from_str(env, name));
+    env.storage().instance().set(&key, &enabled);
+    bump_instance_ttl(env);
+}
+
 // ── Token allowlist (SEC-009) ─────────────────────────────────────────────────
 
 /// Returns true when the token allowlist enforcement is active.
+///
+/// Consults the `token_allowlist_enforced` feature flag first (MISC-034).
+/// When the flag is unset, falls back to the legacy `TokenAllowlistEnabled`
+/// key for backward compatibility with deployments that predate the flag.
 pub fn is_token_allowlist_enabled(env: &Env) -> bool {
+    let flag_key = DataKey::FeatureFlag(soroban_sdk::String::from_str(
+        env,
+        FLAG_TOKEN_ALLOWLIST_ENFORCED,
+    ));
+    if let Some(enabled) = env.storage().instance().get::<_, bool>(&flag_key) {
+        return enabled;
+    }
     env.storage()
         .instance()
         .get(&DataKey::TokenAllowlistEnabled)

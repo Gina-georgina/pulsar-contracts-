@@ -56,6 +56,65 @@ router.post("/", paymentsLimiter, async (req, res, next) => {
   }
 });
 
+const MAX_BATCH_SIZE = 50;
+
+/**
+ * POST /api/payments/batch
+ * Body: { payer, orders: [{ order_id, merchant_address, payer, token, amount, description, expires_at, signature }] }
+ * Accepts up to 50 orders; each is submitted as a separate Soroban transaction.
+ */
+router.post("/batch", async (req, res, next) => {
+  try {
+    const { payer, orders } = req.body;
+    if (!payer || !Array.isArray(orders)) {
+      return res.status(422).json({ error: { code: "InvalidInput", message: "Missing required fields: payer and orders array" } });
+    }
+    if (orders.length === 0) {
+      return res.status(422).json({ error: { code: "InvalidInput", message: "orders array must not be empty" } });
+    }
+    if (orders.length > MAX_BATCH_SIZE) {
+      return res.status(422).json({
+        error: { code: "InvalidInput", message: `Batch size exceeds limit of ${MAX_BATCH_SIZE} orders` },
+      });
+    }
+
+    const results = [];
+    for (let i = 0; i < orders.length; i++) {
+      const order = orders[i];
+      const orderId = order?.order_id;
+      try {
+        if (!order || !order.order_id || !order.merchant_address || !order.payer || !order.token || order.amount == null || !order.signature) {
+          throw Object.assign(new Error("Missing required order fields"), { code: "InvalidInput" });
+        }
+        const txHash = await invoke("process_payment_with_signature", [
+          nativeToScVal(order.payer, { type: "address" }),
+          orderToScVal(order),
+          nativeToScVal(Buffer.from(order.signature, "hex"), { type: "bytes" }),
+        ]);
+        results.push({ index: i, order_id: orderId, success: true, tx_hash: txHash ?? null });
+      } catch (err) {
+        results.push({
+          index: i,
+          order_id: orderId ?? null,
+          success: false,
+          error: {
+            code: err?.code ?? "PaymentFailed",
+            message: err?.message ?? "Payment processing failed",
+          },
+        });
+      }
+    }
+
+    const succeeded = results.filter((r) => r.success).length;
+    res.status(200).json({
+      results,
+      summary: { total: results.length, succeeded, failed: results.length - succeeded },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 /**
  * GET /api/payments/:id
  * Query: { caller }
