@@ -113,7 +113,20 @@ The following jobs in `.github/workflows/ci.yml` must all pass before merging:
 - `build` — WASM artifact compiles and passes the binary size gate
 - `security-audit` — `cargo audit` reports no known vulnerabilities
 - `deny` — `cargo deny check` (licence and duplicate-crate policy)
-- `coverage` — generates test coverage report (warning only, does not block)
+- `coverage` — line coverage must be at or above `COVERAGE_THRESHOLD` (default 80%); fails the job otherwise
+
+### Coverage requirement
+
+CI enforces a minimum line-coverage threshold. The `coverage` job fails (and
+blocks the merge) when line coverage drops below the threshold, so PRs that
+reduce coverage cannot be merged silently.
+
+- The threshold is defined by the `COVERAGE_THRESHOLD` variable in
+  `.github/workflows/ci.yml` and defaults to **80** (percent).
+- To adjust the threshold, change the value of `COVERAGE_THRESHOLD` in the
+  workflow's `env` block — no other edits are required.
+- Before opening a PR, run the tests locally and add tests for any new code so
+  coverage stays at or above the threshold.
 
 ### Why these rules exist
 

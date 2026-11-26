@@ -45,7 +45,7 @@ export async function startListener(
 
   console.log(`[listener] Watching contract ${contractId} on ${rpcUrl}`);
 
-  setInterval(async () => {
+  const timer = setInterval(async () => {
     try {
       const info = await server.getLatestLedger();
 
@@ -118,6 +118,12 @@ export async function startListener(
       }
     }
   }, pollIntervalMs);
+
+  return {
+    stop() {
+      clearInterval(timer);
+    },
+  };
 }
 
 function extractMerchant(ev: rpc.Api.EventResponse): string | null {

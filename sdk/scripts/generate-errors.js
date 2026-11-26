@@ -48,28 +48,40 @@ const MESSAGES = {
   TokenNotAllowed:            "The token contract address is not on the admin-managed allowlist",
 };
 
-const src = fs.readFileSync(ERROR_RS, "utf8");
-const variantRe = /^\s{4}(\w+)\s*=\s*(\d+),/gm;
+/**
+ * Parse an error.rs source string into a sorted list of error entries.
+ * Variants without a known message fall back to `Error code <n>`.
+ */
+function parseErrorRs(src) {
+  const variantRe = /^\s{4}(\w+)\s*=\s*(\d+),/gm;
 
-const errors = [];
-let m;
-while ((m = variantRe.exec(src)) !== null) {
-  const name = m[1];
-  const code = parseInt(m[2], 10);
-  errors.push({ code, name, message: MESSAGES[name] ?? `Error code ${code}` });
+  const errors = [];
+  let m;
+  while ((m = variantRe.exec(src)) !== null) {
+    const name = m[1];
+    const code = parseInt(m[2], 10);
+    errors.push({ code, name, message: MESSAGES[name] ?? `Error code ${code}` });
+  }
+  errors.sort((a, b) => a.code - b.code);
+  return errors;
 }
-errors.sort((a, b) => a.code - b.code);
 
-// --- JSON ---
-const registry = { version: "1.0.0", source: "contracts/payment-processing-contract/src/error.rs", errors };
-fs.writeFileSync(OUT_JSON, JSON.stringify(registry, null, 2) + "\n");
+/** Build the JSON registry object from parsed error entries. */
+function buildRegistry(errors) {
+  return {
+    version: "1.0.0",
+    source: "contracts/payment-processing-contract/src/error.rs",
+    errors,
+  };
+}
 
-// --- TypeScript ---
-const maxNameLen = Math.max(...errors.map(e => e.name.length));
-const enumLines = errors.map(e => `  ${e.name.padEnd(maxNameLen)} = ${e.code},`).join("\n");
-const mapLines  = errors.map(e => `  ${e.code}: "${e.message}",`).join("\n");
+/** Build the generated TypeScript source from parsed error entries. */
+function buildTypeScript(errors) {
+  const maxNameLen = errors.length ? Math.max(...errors.map(e => e.name.length)) : 0;
+  const enumLines = errors.map(e => `  ${e.name.padEnd(maxNameLen)} = ${e.code},`).join("\n");
+  const mapLines  = errors.map(e => `  ${e.code}: "${e.message}",`).join("\n");
 
-const ts = `// AUTO-GENERATED — do not edit by hand.
+  return `// AUTO-GENERATED — do not edit by hand.
 // Run \`node sdk/scripts/generate-errors.js\` to regenerate from error-registry.json.
 
 export enum PulsarErrorCode {
@@ -85,8 +97,26 @@ export function getErrorMessage(code: number): string {
   return registry[code] ?? \`Unknown contract error (code \${code})\`;
 }
 `;
-fs.writeFileSync(OUT_TS, ts);
+}
 
-console.log(`Generated ${errors.length} error entries.`);
-console.log(`  -> ${OUT_JSON}`);
-console.log(`  -> ${OUT_TS}`);
+function main() {
+  const src = fs.readFileSync(ERROR_RS, "utf8");
+  const errors = parseErrorRs(src);
+
+  // --- JSON ---
+  const registry = buildRegistry(errors);
+  fs.writeFileSync(OUT_JSON, JSON.stringify(registry, null, 2) + "\n");
+
+  // --- TypeScript ---
+  fs.writeFileSync(OUT_TS, buildTypeScript(errors));
+
+  console.log(`Generated ${errors.length} error entries.`);
+  console.log(`  -> ${OUT_JSON}`);
+  console.log(`  -> ${OUT_TS}`);
+}
+
+if (require.main === module) {
+  main();
+}
+
+module.exports = { parseErrorRs, buildRegistry, buildTypeScript, MESSAGES };

@@ -3,7 +3,11 @@ import { Pool, PoolClient } from 'pg';
 export interface WebhookRegistration {
   merchantAddress: string;
   url: string;
+  status: WebhookStatus;
+  challengeToken: string;
+  createdAt: number;
   registeredAt: number;
+  confirmedAt?: number;
 }
 
 // In-memory cache backed by PostgreSQL for durability.
@@ -86,6 +90,31 @@ export async function registerWebhook(
   return reg;
 }
 
+/**
+ * Confirm a pending registration if the provided challenge token matches.
+ * Returns the confirmed registration, or undefined if no pending registration
+ * exists or the token does not match.
+ */
+export function confirmWebhook(
+  merchantAddress: string,
+  challengeToken: string,
+): WebhookRegistration | undefined {
+  const reg = store.get(merchantAddress);
+  if (!reg || reg.status !== 'pending') {
+    return undefined;
+  }
+  if (!reg.challengeToken || reg.challengeToken !== challengeToken) {
+    return undefined;
+  }
+  const confirmed: WebhookRegistration = {
+    ...reg,
+    status: 'confirmed',
+    confirmedAt: Date.now(),
+  };
+  store.set(merchantAddress, confirmed);
+  return confirmed;
+}
+
 export function getWebhook(merchantAddress: string): WebhookRegistration | undefined {
   return store.get(merchantAddress);
 }
@@ -99,6 +128,10 @@ export async function deleteWebhook(merchantAddress: string): Promise<boolean> {
   return (result.rowCount ?? 0) > 0;
 }
 
+/**
+ * Returns only confirmed registrations so the listener never delivers
+ * events to unverified URLs.
+ */
 export function allWebhooks(): WebhookRegistration[] {
   return Array.from(store.values());
 }
