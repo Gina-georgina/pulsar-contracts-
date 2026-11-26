@@ -65,6 +65,7 @@ async function sendChallenge(url: string, merchantAddress: string, token: string
 
 export function createRouter(rpcUrl: string, contractId: string): express.Router {
   const router = express.Router();
+  router.use(requestIdMiddleware);
   router.use(express.json());
 
   const metrics = {
@@ -167,13 +168,19 @@ export function createRouter(rpcUrl: string, contractId: string): express.Router
   router.post("/webhooks", async (req, res) => {
     const { merchantAddress, url } = req.body as { merchantAddress?: string; url?: string };
     if (!merchantAddress || !url) {
-      res.status(400).json({ error: "merchantAddress and url are required" });
+      next(
+        new ApiError(
+          "VALIDATION_ERROR",
+          "merchantAddress and url are required",
+          400,
+        ),
+      );
       return;
     }
     try {
       new URL(url);
     } catch {
-      res.status(400).json({ error: "url is not a valid URL" });
+      next(new ApiError("VALIDATION_ERROR", "url is not a valid URL", 400));
       return;
     }
     const schemeCheck = validateWebhookUrlScheme(url);
@@ -191,19 +198,23 @@ export function createRouter(rpcUrl: string, contractId: string): express.Router
   });
 
   // GET /webhooks/:merchantAddress — retrieve registration
-  router.get("/webhooks/:merchantAddress", (req, res) => {
+  router.get("/webhooks/:merchantAddress", (req, res, next) => {
     const reg = getWebhook(req.params.merchantAddress);
     if (!reg) {
-      res.status(404).json({ error: "Not found" });
+      next(new ApiError("NOT_FOUND", "Webhook registration not found", 404));
       return;
     }
     res.json(reg);
   });
 
   // DELETE /webhooks/:merchantAddress — remove registration
-  router.delete("/webhooks/:merchantAddress", (req, res) => {
+  router.delete("/webhooks/:merchantAddress", (req, res, next) => {
     const deleted = deleteWebhook(req.params.merchantAddress);
-    res.status(deleted ? 204 : 404).end();
+    if (!deleted) {
+      next(new ApiError("NOT_FOUND", "Webhook registration not found", 404));
+      return;
+    }
+    res.status(204).end();
   });
 
   // ── DLQ Admin endpoints ────────────────────────────────────────────────────
@@ -230,10 +241,10 @@ export function createRouter(rpcUrl: string, contractId: string): express.Router
   });
 
   // GET /admin/dlq/:id — inspect a single DLQ entry
-  router.get("/admin/dlq/:id", (req, res) => {
+  router.get("/admin/dlq/:id", (req, res, next) => {
     const entry = dlq.getEntry(req.params.id);
     if (!entry) {
-      res.status(404).json({ error: "DLQ entry not found" });
+      next(new ApiError("NOT_FOUND", "DLQ entry not found", 404));
       return;
     }
     res.json(entry);
@@ -244,10 +255,10 @@ export function createRouter(rpcUrl: string, contractId: string): express.Router
   // On success the entry is removed from the DLQ.
   // On failure the entry is retained for further manual retry; a new DLQ
   // entry may be created by deliver() for the re-attempt.
-  router.post("/admin/dlq/:id/replay", async (req, res) => {
+  router.post("/admin/dlq/:id/replay", async (req, res, next) => {
     const entry = dlq.getEntry(req.params.id);
     if (!entry) {
-      res.status(404).json({ error: "DLQ entry not found" });
+      next(new ApiError("NOT_FOUND", "DLQ entry not found", 404));
       return;
     }
 
@@ -261,15 +272,25 @@ export function createRouter(rpcUrl: string, contractId: string): express.Router
         .json({ success: true, message: `Entry ${req.params.id} replayed and removed from DLQ.` });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      res.status(502).json({ success: false, error: message });
+      next(new ApiError("DELIVERY_FAILED", message, 502));
     }
   });
 
   // DELETE /admin/dlq/:id — discard a DLQ entry without replaying
-  router.delete("/admin/dlq/:id", (req, res) => {
+  router.delete("/admin/dlq/:id", (req, res, next) => {
     const removed = dlq.remove(req.params.id);
-    res.status(removed ? 204 : 404).end();
+    if (!removed) {
+      next(new ApiError("NOT_FOUND", "DLQ entry not found", 404));
+      return;
+    }
+    res.status(204).end();
   });
+
+  // Standardized 404 for unmatched routes within this router.
+  router.use(notFoundHandler);
+
+  // Standardized error handler — must be registered last.
+  router.use(errorHandler);
 
   return router;
 }

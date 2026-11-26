@@ -1,36 +1,65 @@
-export const CONTRACT_ERRORS: Record<number, string> = {
-  1: "Unauthorized: you don't have permission to perform this action.",
-  2: "Admin already set.",
-  10: "Merchant not found.",
-  11: "Merchant already registered.",
-  12: "Merchant is deactivated.",
-  20: "Payment not found.",
-  21: "Payment already exists.",
-  22: "Invalid amount.",
-  23: "Invalid signature.",
-  24: "Payment has expired.",
-  25: "Insufficient merchant balance for refund.",
-  30: "Refund not found.",
-  31: "Refund already exists.",
-  32: "Refund window has expired (30-day limit).",
-  33: "Refund amount exceeds original payment.",
-  34: "Refund has not been approved.",
-  35: "Refund already completed or rejected.",
-  40: "Multi-sig payment not found.",
-  41: "Signer has already signed.",
-  42: "Multi-sig payment already executed.",
-  43: "Not all required signers have signed.",
-  50: "Invalid input.",
+import errorRegistry from "../../../sdk/error-registry.json";
+
+type ErrorRegistryEntry = {
+  code: number;
+  key?: string;
+  message?: string;
 };
 
-export function getErrorMessage(err: unknown): string {
+type ErrorRegistry = {
+  errors?: ErrorRegistryEntry[];
+};
+
+const registry = errorRegistry as ErrorRegistry;
+
+/**
+ * Data-driven map of contract error codes to i18n translation keys.
+ * Built from sdk/error-registry.json so that adding a new error code
+ * only requires updating the registry (and its locale entries).
+ */
+export const CONTRACT_ERROR_KEYS: Record<number, string> = (() => {
+  const map: Record<number, string> = {};
+  const entries = registry.errors ?? [];
+  for (const entry of entries) {
+    if (typeof entry?.code !== "number") continue;
+    map[entry.code] = entry.key ?? `errors.${entry.code}`;
+  }
+  return map;
+})();
+
+export const UNKNOWN_ERROR_KEY = "errors.unknown";
+
+/**
+ * Returns the i18n translation key for a given contract error code.
+ */
+export function getErrorKey(code: number): string {
+  return CONTRACT_ERROR_KEYS[code] ?? UNKNOWN_ERROR_KEY;
+}
+
+/**
+ * Extracts a contract error code from an error message, if present.
+ */
+export function extractErrorCode(err: unknown): number | null {
   if (err instanceof Error) {
     const match = err.message.match(/Error\(Contract, #(\d+)\)/);
     if (match) {
-      const code = parseInt(match[1], 10);
-      return CONTRACT_ERRORS[code] ?? `Contract error #${code}.`;
+      return parseInt(match[1], 10);
     }
-    return err.message;
   }
-  return "An unexpected error occurred.";
+  return null;
+}
+
+/**
+ * Returns an i18n translation key describing the given error.
+ *
+ * - Contract errors map to `errors.<code>` (or `errors.unknown`).
+ * - Non-contract `Error` instances map to `errors.unknown`.
+ * - Non-`Error` values map to `errors.unknown`.
+ */
+export function getErrorMessage(err: unknown): string {
+  const code = extractErrorCode(err);
+  if (code !== null) {
+    return getErrorKey(code);
+  }
+  return UNKNOWN_ERROR_KEY;
 }

@@ -21,6 +21,7 @@ A machine-readable ABI is available at [`docs/contract-abi.json`](./contract-abi
   - [Admin Config](#admin-config)
 - [Events](#events)
 - [Error Codes](#error-codes)
+- [HTTP Error Response Format](#http-error-response-format)
 - [TypeScript SDK](#typescript-sdk)
 - [HTTP API (Off-Chain Services)](#http-api-off-chain-services)
   - [Health Endpoints](#health-endpoints)
@@ -582,6 +583,129 @@ Emitted by `upgrade`.
 | 42   | `MultisigAlreadyExecuted`     | Payment already executed — treat as success on retry     | ✅ Yes |
 | 43   | `InsufficientSignatures`      | Not all required signers have signed                     | No |
 | 50   | `InvalidInput`                | General input validation failure                         | No |
+
+---
+
+## HTTP Error Response Format
+
+All Pulsar Node.js/Express services return errors using a single, standard
+envelope. Clients can rely on this shape for every error path — validation
+failures, authentication errors, contract errors, and unexpected exceptions.
+
+### Schema
+
+```jsonc
+{
+  "error": {
+    "code": "string",       // stable, machine-readable error code
+    "message": "string",    // human-readable description
+    "requestId": "string"   // optional; correlates with server logs
+  }
+}
+```
+
+| Field       | Type     | Required | Description |
+|---|---|---|---|
+| `error`             | `object` | ✅ | Container for the error payload |
+| `error.code`        | `string` | ✅ | Stable identifier (see table below). Safe to branch on. |
+| `error.message`     | `string` | ✅ | Human-readable message. Do **not** parse this. |
+| `error.requestId`   | `string` | ❌ | Request correlation ID (also returned in the `X-Request-Id` response header when available). Include it when reporting issues. |
+
+> **Note**: The top-level response body contains **only** the `error` key.
+> Legacy shapes such as `{ "message": "..." }` or `{ "error": "..." }` are
+> deprecated and will be removed.
+
+### Example responses
+
+**Validation error (HTTP 400)**
+
+```json
+{
+  "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "amount must be greater than zero",
+    "requestId": "b1e6c2f0-8a4d-4c1e-9f2a-3d5e7c9a1b2f"
+  }
+}
+```
+
+**Contract error (HTTP 400)**
+
+```json
+{
+  "error": {
+    "code": "PAYMENT_ALREADY_EXISTS",
+    "message": "Payment with this order_id has already been processed",
+    "requestId": "b1e6c2f0-8a4d-4c1e-9f2a-3d5e7c9a1b2f"
+  }
+}
+```
+
+**Unexpected server error (HTTP 500)**
+
+```json
+{
+  "error": {
+    "code": "INTERNAL_ERROR",
+    "message": "An unexpected error occurred",
+    "requestId": "b1e6c2f0-8a4d-4c1e-9f2a-3d5e7c9a1b2f"
+  }
+}
+```
+
+### Common error codes
+
+| `error.code`                  | HTTP status | Description |
+|---|---|---|
+| `VALIDATION_ERROR`            | 400 | Request body/query failed validation |
+| `UNAUTHORIZED`                | 401 | Missing or invalid authentication |
+| `FORBIDDEN`                   | 403 | Authenticated but not permitted |
+| `NOT_FOUND`                   | 404 | Resource does not exist |
+| `CONFLICT`                    | 409 | Request conflicts with current state |
+| `RATE_LIMITED`                | 429 | Too many requests |
+| `INTERNAL_ERROR`              | 500 | Unexpected server-side failure |
+| `SERVICE_UNAVAILABLE`         | 503 | Upstream dependency unavailable |
+
+Contract errors (see [Error Codes](#error-codes)) are surfaced with their
+`SCREAMING_SNAKE_CASE` names, e.g. `MERCHANT_NOT_FOUND`,
+`PAYMENT_ALREADY_EXISTS`, `REFUND_WINDOW_EXPIRED`, `INSUFFICIENT_SIGNATURES`.
+
+### Stack traces and production safety
+
+Stack traces are **never** included in HTTP error responses when
+`NODE_ENV=production`. In non-production environments a `stack` field may be
+appended under `error` for debugging, but clients must not depend on it:
+
+```jsonc
+// Development only — never present in production
+{
+  "error": {
+    "code": "INTERNAL_ERROR",
+    "message": "An unexpected error occurred",
+    "requestId": "b1e6c2f0-8a4d-4c1e-9f2a-3d5e7c9a1b2f",
+    "stack": "Error: ...\n    at ..."
+  }
+}
+```
+
+### Client handling guidance
+
+```typescript
+async function callApi<T>(fn: () => Promise<Response>): Promise<T> {
+  const res = await fn();
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    const err = body?.error ?? { code: 'UNKNOWN', message: res.statusText };
+    // Branch on err.code, never on err.message
+    throw Object.assign(new Error(err.message), {
+      code: err.code,
+      requestId: err.requestId,
+      status: res.status,
+    });
+  }
+  return res.json() as Promise<T>;
+}
+```
 
 ---
 

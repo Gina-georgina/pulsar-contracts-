@@ -12,7 +12,9 @@ router.post("/", async (req, res, next) => {
   try {
     const { merchant_address, name, description, contact_info, category } = req.body;
     if (!merchant_address || !name || !description || !contact_info || !category) {
-      return res.status(422).json({ error: { code: "InvalidInput", message: "Missing required fields" } });
+      return next(
+        new ApiError("InvalidInput", "Missing required fields", 422)
+      );
     }
     if (!validateStellarAddress(merchant_address)) {
       return res.status(422).json({
