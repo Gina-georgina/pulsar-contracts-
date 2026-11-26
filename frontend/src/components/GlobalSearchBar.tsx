@@ -91,6 +91,29 @@ export function GlobalSearchBar({
 
   // ── Keyboard navigation ───────────────────────────────────────────────────
 
+  const handleSelectResult = useCallback(
+    (result: SearchResult) => {
+      addToHistory(query);
+      setIsOpen(false);
+      setQuery(result.title);
+      // consumers can extend via onSelect prop if needed
+    },
+    [query, addToHistory],
+  );
+
+  // ── Submit (Enter without active suggestion, or search button) ────────────
+
+  const handleSubmit = useCallback(
+    (e: React.FormEvent<HTMLFormElement>) => {
+      e.preventDefault();
+      const trimmed = query.trim();
+      if (!trimmed) return;
+      addToHistory(trimmed);
+      setIsOpen(true);
+    },
+    [query, addToHistory],
+  );
+
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLInputElement>) => {
       if (!isOpen) return;
@@ -116,6 +139,8 @@ export function GlobalSearchBar({
           break;
         case "Enter":
           if (activeIndex >= 0) {
+            // Suggestion is active: handle it here and prevent the form
+            // submit path from also writing history (avoids double-write).
             e.preventDefault();
             if (items.length > 0 && activeIndex < items.length) {
               handleSelectResult(items[activeIndex]);
@@ -123,6 +148,7 @@ export function GlobalSearchBar({
               setQuery(historyItems[activeIndex]);
             }
           }
+          // Otherwise let the form's onSubmit handle the history write.
           break;
         case "Escape":
           setIsOpen(false);
@@ -173,7 +199,7 @@ export function GlobalSearchBar({
       role="search"
       aria-label="Global search"
     >
-      <div className="gsb__input-wrap">
+      <form className="gsb__input-wrap" role="search" onSubmit={handleSubmit}>
         {/* Search icon */}
         <svg
           className="gsb__icon"
@@ -214,6 +240,7 @@ export function GlobalSearchBar({
           placeholder={placeholder}
           value={query}
           onChange={(e) => {
+            // Only update the query here — history is written on submit.
             setQuery(e.target.value);
             setIsOpen(true);
             setActiveIndex(-1);
@@ -241,7 +268,15 @@ export function GlobalSearchBar({
             ×
           </button>
         )}
-      </div>
+
+        <button
+          type="submit"
+          className="gsb__submit"
+          aria-label="Submit search"
+        >
+          Search
+        </button>
+      </form>
 
       <span className="gsb__sr-only" role="status" aria-live="polite" aria-atomic="true">
         {searchAnnouncement}
