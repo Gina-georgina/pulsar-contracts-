@@ -144,6 +144,27 @@ The gate is implemented in `.github/workflows/release.yml` under the
 
 ---
 
+## Incident Response
+
+The contract includes an emergency pause mechanism (the `Paused` storage key and
+`ContractPaused` error). Operational procedures for using it are documented
+separately from this audit document:
+
+- **Runbook:** [`docs/INCIDENT_RUNBOOK.md`](INCIDENT_RUNBOOK.md)
+
+The runbook covers:
+
+- Pre-conditions for triggering a pause (e.g. critical exploit, abnormal refund rate)
+- CLI commands for pausing and unpausing on testnet and mainnet
+- How to verify the contract is paused
+- User communication guidance
+- A post-incident checklist (audit log review, user communication, root cause analysis)
+
+Auditors should review the runbook alongside the contract source, since the pause
+mechanism is part of the incident-response surface in scope for SEC-001.
+
+---
+
 ## Audit History
 
 | Version | Auditor | Date | Report | Status |

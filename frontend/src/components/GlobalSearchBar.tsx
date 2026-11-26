@@ -31,6 +31,8 @@ export function GlobalSearchBar({
 
   const { history, addToHistory, clearHistory } = useSearchHistory();
   const debouncedQuery = useDebounce(query, 300);
+  const trimmedQuery = query.trim();
+  const trimmedDebouncedQuery = debouncedQuery.trim();
 
   const inputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -43,7 +45,7 @@ export function GlobalSearchBar({
   // ── Fetch results when debounced query changes ────────────────────────────
 
   useEffect(() => {
-    if (!debouncedQuery.trim()) {
+    if (!trimmedDebouncedQuery) {
       setResults(null);
       setLoading(false);
       return;
@@ -52,7 +54,7 @@ export function GlobalSearchBar({
     let cancelled = false;
     setLoading(true);
 
-    onSearch(debouncedQuery)
+    onSearch(trimmedDebouncedQuery)
       .then((data) => {
         if (!cancelled) {
           setResults(data);
@@ -70,7 +72,7 @@ export function GlobalSearchBar({
     return () => {
       cancelled = true;
     };
-  }, [debouncedQuery, onSearch]);
+  }, [trimmedDebouncedQuery, onSearch]);
 
   // ── Close on outside click ────────────────────────────────────────────────
 
@@ -94,7 +96,7 @@ export function GlobalSearchBar({
       if (!isOpen) return;
 
       const items = flatResults.length > 0 ? flatResults : [];
-      const historyItems = !query.trim() ? history : [];
+      const historyItems = !trimmedQuery ? history : [];
       const navigableCount =
         items.length > 0 ? items.length : historyItems.length;
 
@@ -129,7 +131,7 @@ export function GlobalSearchBar({
           break;
       }
     },
-    [isOpen, flatResults, history, query, activeIndex],
+    [isOpen, flatResults, history, trimmedQuery, activeIndex],
   );
 
   const handleSelectResult = useCallback(
@@ -142,8 +144,8 @@ export function GlobalSearchBar({
     [query, addToHistory],
   );
 
-  const showDropdown = isOpen && (query.trim() || history.length > 0);
-  const showHistory = !query.trim() && history.length > 0;
+  const showDropdown = isOpen && (trimmedQuery || history.length > 0);
+  const showHistory = !trimmedQuery && history.length > 0;
   const hasResults =
     results &&
     GROUPS.some((g) => results[g].length > 0);
@@ -159,7 +161,7 @@ export function GlobalSearchBar({
     ? "Searching."
     : showHistory
       ? `${history.length} recent searches available. ${selectedAnnouncement}`
-      : query.trim() && results
+      : trimmedQuery && results
         ? `${flatResults.length} ${flatResults.length === 1 ? "result" : "results"} available. ${selectedAnnouncement}`
         : "";
   const optionId = (index: number) => `${listboxId}-option-${index}`;
@@ -286,7 +288,7 @@ export function GlobalSearchBar({
           )}
 
           {/* Search results grouped by type */}
-          {!showHistory && query.trim() && !loading && hasResults &&
+          {!showHistory && trimmedQuery && !loading && hasResults &&
             GROUPS.map((group) => {
               const items = results![group];
               if (!items.length) return null;
@@ -327,7 +329,7 @@ export function GlobalSearchBar({
             })}
 
           {/* No results */}
-          {!showHistory && query.trim() && !loading && !hasResults && (
+          {!showHistory && trimmedQuery && !loading && !hasResults && (
             <li className="gsb__empty" role="option" aria-selected={false}>
               No results for "{query}"
             </li>

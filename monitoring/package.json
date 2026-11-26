@@ -5,11 +5,17 @@
   "main": "src/monitor.js",
   "scripts": {
     "start": "node src/monitor.js",
-    "test": "node --test src/monitor.test.js"
+    "test": "node --test --experimental-test-coverage src/monitor.test.js",
+    "coverage": "node --test --experimental-test-coverage src/monitor.test.js"
   },
   "dependencies": {
     "@stellar/stellar-sdk": "12.3.0",
     "node-fetch": "3.3.2"
+  },
+  "devDependencies": {
+    "eslint": "^8.57.0",
+    "@typescript-eslint/parser": "^7.18.0",
+    "@typescript-eslint/eslint-plugin": "^7.18.0"
   },
   "engines": {
     "node": ">=18.0.0"

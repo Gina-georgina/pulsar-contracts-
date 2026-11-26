@@ -5,6 +5,11 @@ services:
   stellar-local:
     image: stellar/quickstart:latest
     container_name: pulsar-stellar-local
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
     ports:
       - "8000:8000"   # Horizon API
       - "11625:11625" # Stellar Core peer port
@@ -17,12 +22,102 @@ services:
       timeout: 5s
       retries: 12
 
+  # PostgreSQL database for the indexer and API services
+  postgres:
+    image: postgres:16-alpine
+    container_name: pulsar-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-pulsar}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-pulsar}
+      - POSTGRES_DB=${POSTGRES_DB:-pulsar}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Indexer service: consumes Stellar events and writes to PostgreSQL
+  indexer:
+    build:
+      context: .
+      dockerfile: Dockerfile.indexer
+    container_name: pulsar-indexer
+    environment:
+      - DATABASE_URL=postgres://${POSTGRES_USER:-pulsar}:${POSTGRES_PASSWORD:-pulsar}@postgres:5432/${POSTGRES_DB:-pulsar}
+      - STELLAR_RPC_URL=http://stellar-local:8000/soroban/rpc
+      - STELLAR_HORIZON_URL=http://stellar-local:8000
+      - INDEXER_HEALTH_PORT=8081
+    ports:
+      - "8081:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      stellar-local:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://localhost:8081/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  # API service: serves indexed data to clients
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: pulsar-api
+    environment:
+      - DATABASE_URL=postgres://${POSTGRES_USER:-pulsar}:${POSTGRES_PASSWORD:-pulsar}@postgres:5432/${POSTGRES_DB:-pulsar}
+      - API_PORT=8080
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://localhost:8080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  # Webhook service: delivers event notifications to subscribers
+  webhook:
+    build:
+      context: .
+      dockerfile: Dockerfile.webhook
+    container_name: pulsar-webhook
+    environment:
+      - DATABASE_URL=postgres://${POSTGRES_USER:-pulsar}:${POSTGRES_PASSWORD:-pulsar}@postgres:5432/${POSTGRES_DB:-pulsar}
+      - WEBHOOK_HEALTH_PORT=8082
+    ports:
+      - "8082:8082"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://localhost:8082/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
   # Development container with Rust + Stellar CLI pre-installed
   dev:
     build:
       context: .
       dockerfile: Dockerfile.dev
     container_name: pulsar-dev
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
     volumes:
       - .:/workspace
       - cargo-cache:/usr/local/cargo/registry
@@ -36,5 +131,27 @@ services:
     stdin_open: true
     tty: true
 
+  # Monitoring service for the Pulsar contract
+  monitoring:
+    build:
+      context: ./monitoring
+      dockerfile: Dockerfile
+    container_name: pulsar-monitoring
+    environment:
+      - CONTRACT_ID=${CONTRACT_ID:-}
+      - HORIZON_URL=${HORIZON_URL:-http://stellar-local:8000}
+      - POLL_INTERVAL_MS=${POLL_INTERVAL_MS:-5000}
+      - PING_INTERVAL_MS=${PING_INTERVAL_MS:-60000}
+      - REFUND_RATE_THRESHOLD=${REFUND_RATE_THRESHOLD:-0.1}
+      - REFUND_RATE_WINDOW_MS=${REFUND_RATE_WINDOW_MS:-300000}
+      - LARGE_PAYMENT_THRESHOLD=${LARGE_PAYMENT_THRESHOLD:-1000}
+      - ERROR_RATE_THRESHOLD=${ERROR_RATE_THRESHOLD:-0.05}
+      - ALERT_WEBHOOK_URL=${ALERT_WEBHOOK_URL:-}
+    depends_on:
+      stellar-local:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   cargo-cache:
+  postgres-data:

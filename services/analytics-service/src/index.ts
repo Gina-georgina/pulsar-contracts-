@@ -1,5 +1,10 @@
 import express from "express";
 import { createAnalyticsRouter } from "./api";
+import {
+  requestIdMiddleware,
+  errorHandler,
+  notFoundHandler,
+} from "@shared/error-middleware";
 
 const PORT = Number(process.env.PORT ?? 3100);
 const DATABASE_URL = process.env.DATABASE_URL ?? "";
@@ -42,6 +47,7 @@ function waitForDrain(timeoutMs: number): Promise<void> {
 }
 
 const app = express();
+app.use(requestIdMiddleware);
 app.use(express.json());
 
 app.get("/health", (_req, res) => {
@@ -54,50 +60,12 @@ app.get("/health", (_req, res) => {
 
 app.use(createAnalyticsRouter(DATABASE_URL));
 
-const server = app.listen(PORT, () => {
+// 404 handler for unmatched routes
+app.use(notFoundHandler);
+
+// Shared error middleware must be registered last
+app.use(errorHandler);
+
+app.listen(PORT, () => {
   console.log(`[analytics] Service listening on port ${PORT}`);
 });
-
-async function gracefulShutdown(signal: string): Promise<void> {
-  if (shuttingDown) {
-    return;
-  }
-  shuttingDown = true;
-  console.log(
-    `[analytics] Received ${signal}, starting graceful shutdown (timeout ${SHUTDOWN_TIMEOUT_MS}ms)`
-  );
-
-  const serverClosed = new Promise<void>((resolve) => {
-    server.close(() => resolve());
-  });
-
-  await Promise.all([serverClosed, waitForDrain(SHUTDOWN_TIMEOUT_MS)]);
-
-  if (inFlightOperations > 0) {
-    console.warn(
-      `[analytics] Shutdown timeout reached with ${inFlightOperations} in-flight operation(s) remaining`
-    );
-  }
-
-  try {
-    const pool = (app.locals as { pool?: { end?: () => Promise<void> } }).pool;
-    if (pool && typeof pool.end === "function") {
-      await pool.end();
-    }
-  } catch (err) {
-    console.error("[analytics] Error closing database pool", err);
-  }
-
-  console.log("[analytics] Graceful shutdown complete");
-  process.exit(0);
-}
-
-process.on("SIGTERM", () => {
-  void gracefulShutdown("SIGTERM");
-});
-
-process.on("SIGINT", () => {
-  void gracefulShutdown("SIGINT");
-});
-
-export { app, server, trackOperation, SHUTDOWN_TIMEOUT_MS };
