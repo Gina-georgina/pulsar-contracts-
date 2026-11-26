@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useState } from "react";
 
 const STORAGE_KEY = "pulsar_search_history";
-const MAX_HISTORY = 10;
+
+export const MAX_HISTORY_ENTRIES = 50;
 
 export function useSearchHistory() {
   const [history, setHistory] = useState<string[]>(() => {
     try {
-      return JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "[]");
+      const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "[]");
+      if (!Array.isArray(parsed)) return [];
+      return parsed.slice(0, MAX_HISTORY_ENTRIES);
     } catch {
       return [];
     }
@@ -14,7 +17,10 @@ export function useSearchHistory() {
 
   useEffect(() => {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(history));
+      localStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify(history.slice(0, MAX_HISTORY_ENTRIES)),
+      );
     } catch {
       // storage unavailable — silently ignore
     }
@@ -25,7 +31,7 @@ export function useSearchHistory() {
     if (!trimmed) return;
     setHistory((prev) => {
       const filtered = prev.filter((h) => h !== trimmed);
-      return [trimmed, ...filtered].slice(0, MAX_HISTORY);
+      return [trimmed, ...filtered].slice(0, MAX_HISTORY_ENTRIES);
     });
   }, []);
 
