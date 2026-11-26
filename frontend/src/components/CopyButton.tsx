@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useEffect, useState } from "react";
 import { useCopyToClipboard } from "../hooks/useCopyToClipboard";
 
 interface CopyButtonProps {
@@ -16,9 +16,27 @@ interface CopyButtonProps {
  */
 export function CopyButton({ text, label = "Copy", className = "" }: CopyButtonProps) {
   const { copy, status } = useCopyToClipboard();
+  const [announcement, setAnnouncement] = useState("");
 
   const isCopied = status === "copied";
   const isError = status === "error";
+
+  useEffect(() => {
+    if (isCopied) {
+      setAnnouncement("Copied to clipboard");
+    } else if (isError) {
+      setAnnouncement("Copy failed");
+    } else {
+      setAnnouncement("");
+      return;
+    }
+
+    const timeoutId = setTimeout(() => {
+      setAnnouncement("");
+    }, 2000);
+
+    return () => clearTimeout(timeoutId);
+  }, [isCopied, isError]);
 
   return (
     <>
@@ -79,7 +97,7 @@ export function CopyButton({ text, label = "Copy", className = "" }: CopyButtonP
 
       {/* Live region so screen readers announce the copy result */}
       <span role="status" aria-live="polite" className="sr-only">
-        {isCopied ? "Copied to clipboard" : isError ? "Copy failed" : ""}
+        {announcement}
       </span>
     </>
   );
