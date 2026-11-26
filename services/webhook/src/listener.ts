@@ -13,19 +13,51 @@ const WATCHED_EVENTS = new Set([
   "multisig_executed",
 ]);
 
+const MAX_CONSECUTIVE_FAILURES = 3;
+
+export interface ListenerOptions {
+  /** Override the RPC server (used for testing). */
+  server?: rpc.Server;
+  /** Called when the RPC has been unreachable for more than 3 consecutive polls. */
+  onAlert?: (message: string, details: { rpcUrl: string; failures: number }) => void;
+}
+
+function defaultAlert(
+  message: string,
+  details: { rpcUrl: string; failures: number }
+): void {
+  console.error(
+    `[listener] ALERT: ${message} (rpcUrl=${details.rpcUrl}, consecutiveFailures=${details.failures})`
+  );
+}
+
 export async function startListener(
   rpcUrl: string,
   contractId: string,
-  pollIntervalMs = 5_000
+  pollIntervalMs = 5_000,
+  options: ListenerOptions = {}
 ): Promise<void> {
-  const server = new rpc.Server(rpcUrl);
+  const server = options.server ?? new rpc.Server(rpcUrl);
+  const alert = options.onAlert ?? defaultAlert;
   let latestLedger = 0;
+  let consecutiveFailures = 0;
+  let alertFired = false;
 
   console.log(`[listener] Watching contract ${contractId} on ${rpcUrl}`);
 
   setInterval(async () => {
     try {
       const info = await server.getLatestLedger();
+
+      // Successful poll: reset circuit-breaker state.
+      if (consecutiveFailures > 0) {
+        console.log(
+          `[listener] RPC recovered after ${consecutiveFailures} consecutive failure(s)`
+        );
+      }
+      consecutiveFailures = 0;
+      alertFired = false;
+
       if (info.sequence <= latestLedger) return;
 
       const events = await server.getEvents({
@@ -71,7 +103,19 @@ export async function startListener(
         }
       }
     } catch (err) {
-      console.error("[listener] Poll error:", err);
+      consecutiveFailures += 1;
+      console.error(
+        `[listener] Poll error (consecutiveFailures=${consecutiveFailures}):`,
+        err
+      );
+
+      if (consecutiveFailures > MAX_CONSECUTIVE_FAILURES && !alertFired) {
+        alertFired = true;
+        alert(
+          `RPC unreachable for ${consecutiveFailures} consecutive polls`,
+          { rpcUrl, failures: consecutiveFailures }
+        );
+      }
     }
   }, pollIntervalMs);
 }

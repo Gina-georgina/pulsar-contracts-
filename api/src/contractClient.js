@@ -2,7 +2,7 @@
  * Stellar contract client — thin wrapper around stellar-sdk contract invocation.
  * Reads CONTRACT_ID, STELLAR_NETWORK, STELLAR_RPC_URL from environment.
  */
-import { Contract, rpc, TransactionBuilder, Networks, Keypair } from "@stellar/stellar-sdk";
+import { Contract, rpc, TransactionBuilder, Networks, Keypair, StrKey } from "@stellar/stellar-sdk";
 
 const CONTRACT_ID = process.env.CONTRACT_ID;
 const NETWORK = process.env.STELLAR_NETWORK || "testnet";
@@ -75,6 +75,20 @@ export async function invoke(fn, args = []) {
 async function _sourceAccount() {
   const keypair = SOURCE_SECRET ? Keypair.fromSecret(SOURCE_SECRET) : Keypair.random();
   return server().getAccount(keypair.publicKey()).catch(() => ({ accountId: () => keypair.publicKey(), sequenceNumber: () => "0", incrementSequenceNumber: () => {} }));
+}
+
+/**
+ * Validate that a value is a well-formed Stellar Ed25519 public key (G-address).
+ * @param {unknown} address
+ * @returns {boolean}
+ */
+export function validateStellarAddress(address) {
+  if (typeof address !== "string") return false;
+  try {
+    return StrKey.isValidEd25519PublicKey(address);
+  } catch {
+    return false;
+  }
 }
 
 export class ContractError extends Error {

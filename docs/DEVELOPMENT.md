@@ -9,7 +9,7 @@ This guide provides instructions for setting up a development environment and wo
 - [Building](#building)
 - [Testing](#testing)
 - [Local Network](#local-network)
-- [Container Resource Limits](#container-resource-limits)
+- [Docker Compose Health Checks](#docker-compose-health-checks)
 - [Environment Seeding](#environment-seeding)
 - [Debugging](#debugging)
 - [Common Tasks](#common-tasks)
@@ -159,66 +159,75 @@ stellar network container restart local
 stellar network container logs local
 ```
 
-## Container Resource Limits
+## Docker Compose Health Checks
 
-Every service in `docker-compose.yml` declares `deploy.resources.limits` for both
-memory and CPU. Without limits, a single misbehaving container — for example the
-monitoring poll loop during an RPC error storm — can consume all available host
-resources and starve its sibling containers (and the host itself).
+The `docker-compose.yml` stack uses health checks to prevent services from starting before their dependencies are ready.
 
-### Default Limits
+### PostgreSQL Health Check
 
-The defaults are intentionally conservative so the whole stack fits comfortably
-on a developer laptop:
-
-| Resource | Limit per service |
-| -------- | ----------------- |
-| Memory   | `256M`            |
-| CPU      | `0.5`             |
+The `postgres` service defines a `healthcheck` that runs `pg_isready` inside the container:
 
 ```yaml
 services:
-  monitoring:
-    # ...
-    deploy:
-      resources:
-        limits:
-          memory: 256M
-          cpus: "0.5"
+  postgres:
+    image: postgres:16-alpine
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-pulsar} -d ${POSTGRES_DB:-pulsar}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
 ```
 
-### Raising Limits
+Postgres is only marked `healthy` once `pg_isready` succeeds, so dependent services never connect to a database that is still initializing.
 
-If a service legitimately needs more headroom (e.g. a large seeding run or a
-debugger attached to a container), raise the limits in one of two ways.
+### Service Dependencies
 
-**1. Edit `docker-compose.yml` directly** — change the `memory` / `cpus` values
-under that service's `deploy.resources.limits` block.
-
-**2. Use a `docker-compose.override.yml`** — preferred for local, uncommitted
-tweaks. Compose automatically merges this file with `docker-compose.yml`:
+The `indexer` and `api` services wait for PostgreSQL to become healthy before starting:
 
 ```yaml
-# docker-compose.override.yml
 services:
-  monitoring:
-    deploy:
-      resources:
-        limits:
-          memory: 512M
-          cpus: "1.0"
+  indexer:
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    depends_on:
+      postgres:
+        condition: service_healthy
 ```
 
-### Verifying Limits
+If the database fails to become healthy within the configured retries, `docker compose up` reports the failure instead of leaving services in a crash loop that requires manual restarts.
 
-Confirm the merged configuration before starting the stack:
+### Health Endpoints
+
+The `indexer` and `webhook` services expose an HTTP `/health` endpoint that returns `200 OK` when the service is ready:
 
 ```bash
-docker compose config
+# Indexer health
+curl -f http://localhost:3001/health
+
+# Webhook service health
+curl -f http://localhost:3002/health
 ```
 
-The output shows the effective `deploy.resources.limits` for each service. After
-`docker compose up`, you can also check live usage with `docker stats`.
+These endpoints are also used by the containers' own `healthcheck` blocks, so `docker compose ps` reflects their readiness.
+
+### Inspecting Health Status
+
+```bash
+# Show container status, including health
+docker compose ps
+
+# Inspect the raw health state of a specific service
+docker inspect --format '{{json .State.Health}}' $(docker compose ps -q postgres)
+
+# Follow health check logs
+docker compose logs -f postgres indexer webhook
+```
+
+A healthy stack shows `(healthy)` next to each service in `docker compose ps`. Services still starting show `(health: starting)`, and failing checks show `(unhealthy)`.
 
 ## Environment Seeding
 

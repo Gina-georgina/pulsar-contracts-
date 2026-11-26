@@ -28,3 +28,168 @@ body {
   color: var(--color-text);
   transition: background-color 0.2s, color 0.2s;
 }
+
+/* ------------------------------------------------------------------ */
+/* Responsive navigation                                              */
+/* ------------------------------------------------------------------ */
+
+.mobile-nav {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+/* Horizontal navigation – visible on wide screens */
+.mobile-nav__links {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.mobile-nav__link {
+  display: inline-block;
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.375rem;
+  color: var(--color-text);
+  text-decoration: none;
+  transition: background-color 0.2s, color 0.2s;
+}
+
+.mobile-nav__link:hover {
+  background-color: var(--color-surface);
+  color: var(--color-primary);
+}
+
+.mobile-nav__link[aria-current="page"] {
+  color: var(--color-primary);
+  font-weight: 600;
+}
+
+/* Hamburger button – hidden on wide screens */
+.mobile-nav__toggle {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 2.75rem;
+  height: 2.75rem;
+  padding: 0;
+  border: 1px solid var(--color-border);
+  border-radius: 0.375rem;
+  background-color: var(--color-surface);
+  color: var(--color-text);
+  cursor: pointer;
+  transition: background-color 0.2s, border-color 0.2s;
+}
+
+.mobile-nav__toggle:hover {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
+/* Backdrop behind the drawer */
+.mobile-nav__backdrop {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  background-color: rgba(0, 0, 0, 0.5);
+  opacity: 0;
+  transition: opacity 0.2s ease-in-out;
+}
+
+.mobile-nav__backdrop.is-open {
+  display: block;
+  opacity: 1;
+}
+
+/* Drawer panel */
+.mobile-nav__drawer {
+  display: none;
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 50;
+  width: min(80vw, 20rem);
+  padding: 1.5rem 1rem;
+  background-color: var(--color-bg);
+  border-left: 1px solid var(--color-border);
+  box-shadow: -4px 0 16px rgba(0, 0, 0, 0.15);
+  overflow-y: auto;
+  transform: translateX(100%);
+  transition: transform 0.2s ease-in-out;
+}
+
+.mobile-nav__drawer.is-open {
+  display: block;
+  transform: translateX(0);
+}
+
+.mobile-nav__drawer .mobile-nav__links {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.25rem;
+}
+
+.mobile-nav__drawer .mobile-nav__link {
+  display: block;
+  padding: 0.75rem 1rem;
+}
+
+.mobile-nav__close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.75rem;
+  height: 2.75rem;
+  margin-left: auto;
+  margin-bottom: 1rem;
+  padding: 0;
+  border: 1px solid var(--color-border);
+  border-radius: 0.375rem;
+  background-color: var(--color-surface);
+  color: var(--color-text);
+  cursor: pointer;
+}
+
+.mobile-nav__close:hover {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
+/* Visible focus outlines for keyboard users (WCAG 2.1 AA) */
+.mobile-nav__toggle:focus-visible,
+.mobile-nav__close:focus-visible,
+.mobile-nav__link:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+/* Collapse navigation into hamburger-triggered drawer below 768px */
+@media (max-width: 768px) {
+  .mobile-nav__links {
+    display: none;
+  }
+
+  .mobile-nav__toggle {
+    display: inline-flex;
+  }
+
+  .mobile-nav__drawer .mobile-nav__links {
+    display: flex;
+  }
+}
+
+/* Respect reduced-motion preferences */
+@media (prefers-reduced-motion: reduce) {
+  .mobile-nav__backdrop,
+  .mobile-nav__drawer,
+  .mobile-nav__link,
+  .mobile-nav__toggle {
+    transition: none;
+  }
+}
