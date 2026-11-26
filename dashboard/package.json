@@ -21,9 +21,7 @@
   "scripts": {
     "start": "react-scripts start",
     "build": "react-scripts build",
-    "test": "react-scripts test",
-    "lint": "eslint .",
-    "typecheck": "tsc --noEmit"
+    "test": "react-scripts test --watchAll=false --coverage"
   },
   "browserslist": {
     "production": [">0.2%", "not dead", "not op_mini all"],

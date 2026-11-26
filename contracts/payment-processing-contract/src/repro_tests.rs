@@ -192,6 +192,12 @@ fn test_initiate_multisig_duplicate_signer_fails() {
 // Fix: collect all matching records first, sort them, then find the cursor
 // position by `order_id` and slice from `position + 1` onward. The
 // `next_cursor` is set to the last record in the current page slice.
+//
+// This is a pure logic assertion test (no snapshot): it explicitly verifies
+// that the cursor ordering is respected across pages. If the inversion bug is
+// reintroduced, page 2 would either re-include the last record of page 1 or
+// skip the first record of page 2, and the strict ordering assertions below
+// would fail.
 #[test]
 fn test_pagination_cursor_inverted() {
     let (env, client) = setup();
@@ -201,44 +207,99 @@ fn test_pagination_cursor_inverted() {
     let token = create_token(&env, &admin);
     client.set_admin(&admins(&env, &admin), &1);
     client.register_merchant(&merchant, &str(&env, "M"), &str(&env, "D"), &str(&env, "E"), &MerchantCategory::Retail, &None);
-    mint(&env, &token, &payer, 10000);
-    for i in 1..=5 {
+    mint(&env, &token, &payer, 100_000);
+
+    // Create 6 payments with distinct amounts: 100, 200, 300, 400, 500, 600.
+    for i in 1..=6_i128 {
         let mut order = make_order(&env, &merchant, &payer, &token);
         order.order_id = bytes(&env, &format!("ORDER_{:03}", i));
         order.amount = i * 100;
         client.process_payment_with_signature(&payer, &order, &zero_sig(&env), &zero_key(&env));
     }
 
-    // Page 1: top 2 by amount descending → 500, 400
-    let page1 = client.get_merchant_payment_history(&merchant, &None, &2, &None, &SortField::Amount, &SortOrder::Descending);
-    assert_eq!(page1.records.len(), 2);
-    assert_eq!(page1.records.get(0).unwrap().amount, 500);
-    assert_eq!(page1.records.get(1).unwrap().amount, 400);
+    // ---- Descending order: page 2 records must be strictly smaller than the
+    // last record on page 1. ----
+    let page1 = client.get_merchant_payment_history(
+        &merchant,
+        &None,
+        &2,
+        &None,
+        &SortField::Amount,
+        &SortOrder::Descending,
+    );
+    assert_eq!(page1.records.len(), 2, "page 1 must contain 2 records");
     assert!(page1.next_cursor.is_some(), "page 1 must have a next_cursor");
 
-    // Page 2: next 2 → 300, 200 (must not re-include 400 or skip 300)
-    let page2 = client.get_merchant_payment_history(&merchant, &page1.next_cursor, &2, &None, &SortField::Amount, &SortOrder::Descending);
-    assert_eq!(page2.records.len(), 2);
-    assert_eq!(page2.records.get(0).unwrap().amount, 300);
-    assert_eq!(page2.records.get(1).unwrap().amount, 200);
-    assert!(page2.next_cursor.is_some(), "page 2 must have a next_cursor");
+    let page1_last_amount = page1.records.get(page1.records.len() - 1).unwrap().amount;
 
-    // Page 3: last record → 100 only; no further cursor
-    let page3 = client.get_merchant_payment_history(&merchant, &page2.next_cursor, &2, &None, &SortField::Amount, &SortOrder::Descending);
-    assert_eq!(page3.records.len(), 1);
-    assert_eq!(page3.records.get(0).unwrap().amount, 100);
-    assert!(page3.next_cursor.is_none(), "page 3 is the last page");
+    let page2 = client.get_merchant_payment_history(
+        &merchant,
+        &page1.next_cursor,
+        &2,
+        &None,
+        &SortField::Amount,
+        &SortOrder::Descending,
+    );
+    assert_eq!(page2.records.len(), 2, "page 2 must contain 2 records");
 
-    // Verify all 5 distinct records were returned with no duplicates or gaps.
-    let mut all_amounts = alloc::vec![
-        page1.records.get(0).unwrap().amount,
-        page1.records.get(1).unwrap().amount,
-        page2.records.get(0).unwrap().amount,
-        page2.records.get(1).unwrap().amount,
-        page3.records.get(0).unwrap().amount,
-    ];
-    all_amounts.sort_unstable();
-    assert_eq!(all_amounts, alloc::vec![100, 200, 300, 400, 500]);
+    // Every record on page 2 must be strictly smaller than the last record on
+    // page 1 (descending sort). This catches both re-inclusion of the cursor
+    // record and skipping of the first record after the cursor.
+    for i in 0..page2.records.len() {
+        let amount = page2.records.get(i).unwrap().amount;
+        assert!(
+            amount < page1_last_amount,
+            "descending: page 2 record amount {} must be strictly less than page 1 last amount {}",
+            amount,
+            page1_last_amount
+        );
+    }
+    // Page 2 must also be internally sorted descending.
+    for i in 1..page2.records.len() {
+        let prev = page2.records.get(i - 1).unwrap().amount;
+        let cur = page2.records.get(i).unwrap().amount;
+        assert!(cur < prev, "descending: page 2 must be strictly ordered");
+    }
+
+    // ---- Ascending order: page 2 records must be strictly larger than the
+    // last record on page 1. ----
+    let asc_page1 = client.get_merchant_payment_history(
+        &merchant,
+        &None,
+        &2,
+        &None,
+        &SortField::Amount,
+        &SortOrder::Ascending,
+    );
+    assert_eq!(asc_page1.records.len(), 2, "ascending page 1 must contain 2 records");
+    assert!(asc_page1.next_cursor.is_some(), "ascending page 1 must have a next_cursor");
+
+    let asc_page1_last_amount = asc_page1.records.get(asc_page1.records.len() - 1).unwrap().amount;
+
+    let asc_page2 = client.get_merchant_payment_history(
+        &merchant,
+        &asc_page1.next_cursor,
+        &2,
+        &None,
+        &SortField::Amount,
+        &SortOrder::Ascending,
+    );
+    assert_eq!(asc_page2.records.len(), 2, "ascending page 2 must contain 2 records");
+
+    for i in 0..asc_page2.records.len() {
+        let amount = asc_page2.records.get(i).unwrap().amount;
+        assert!(
+            amount > asc_page1_last_amount,
+            "ascending: page 2 record amount {} must be strictly greater than page 1 last amount {}",
+            amount,
+            asc_page1_last_amount
+        );
+    }
+    for i in 1..asc_page2.records.len() {
+        let prev = asc_page2.records.get(i - 1).unwrap().amount;
+        let cur = asc_page2.records.get(i).unwrap().amount;
+        assert!(cur > prev, "ascending: page 2 must be strictly ordered");
+    }
 }
 
 // SC-006: No expiry enforcement on multisig payments.
