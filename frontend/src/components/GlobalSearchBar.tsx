@@ -31,6 +31,8 @@ export function GlobalSearchBar({
 
   const { history, addToHistory, clearHistory } = useSearchHistory();
   const debouncedQuery = useDebounce(query, 300);
+  const trimmedQuery = query.trim();
+  const trimmedDebouncedQuery = debouncedQuery.trim();
 
   const inputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -43,7 +45,7 @@ export function GlobalSearchBar({
   // ── Fetch results when debounced query changes ────────────────────────────
 
   useEffect(() => {
-    if (!debouncedQuery.trim()) {
+    if (!trimmedDebouncedQuery) {
       setResults(null);
       setLoading(false);
       return;
@@ -52,7 +54,7 @@ export function GlobalSearchBar({
     let cancelled = false;
     setLoading(true);
 
-    onSearch(debouncedQuery)
+    onSearch(trimmedDebouncedQuery)
       .then((data) => {
         if (!cancelled) {
           setResults(data);
@@ -70,7 +72,7 @@ export function GlobalSearchBar({
     return () => {
       cancelled = true;
     };
-  }, [debouncedQuery, onSearch]);
+  }, [trimmedDebouncedQuery, onSearch]);
 
   // ── Close on outside click ────────────────────────────────────────────────
 
@@ -89,12 +91,35 @@ export function GlobalSearchBar({
 
   // ── Keyboard navigation ───────────────────────────────────────────────────
 
+  const handleSelectResult = useCallback(
+    (result: SearchResult) => {
+      addToHistory(query);
+      setIsOpen(false);
+      setQuery(result.title);
+      // consumers can extend via onSelect prop if needed
+    },
+    [query, addToHistory],
+  );
+
+  // ── Submit (Enter without active suggestion, or search button) ────────────
+
+  const handleSubmit = useCallback(
+    (e: React.FormEvent<HTMLFormElement>) => {
+      e.preventDefault();
+      const trimmed = query.trim();
+      if (!trimmed) return;
+      addToHistory(trimmed);
+      setIsOpen(true);
+    },
+    [query, addToHistory],
+  );
+
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLInputElement>) => {
       if (!isOpen) return;
 
       const items = flatResults.length > 0 ? flatResults : [];
-      const historyItems = !query.trim() ? history : [];
+      const historyItems = !trimmedQuery ? history : [];
       const navigableCount =
         items.length > 0 ? items.length : historyItems.length;
 
@@ -114,6 +139,8 @@ export function GlobalSearchBar({
           break;
         case "Enter":
           if (activeIndex >= 0) {
+            // Suggestion is active: handle it here and prevent the form
+            // submit path from also writing history (avoids double-write).
             e.preventDefault();
             if (items.length > 0 && activeIndex < items.length) {
               handleSelectResult(items[activeIndex]);
@@ -121,6 +148,7 @@ export function GlobalSearchBar({
               setQuery(historyItems[activeIndex]);
             }
           }
+          // Otherwise let the form's onSubmit handle the history write.
           break;
         case "Escape":
           setIsOpen(false);
@@ -129,7 +157,7 @@ export function GlobalSearchBar({
           break;
       }
     },
-    [isOpen, flatResults, history, query, activeIndex],
+    [isOpen, flatResults, history, trimmedQuery, activeIndex],
   );
 
   const handleSelectResult = useCallback(
@@ -142,8 +170,8 @@ export function GlobalSearchBar({
     [query, addToHistory],
   );
 
-  const showDropdown = isOpen && (query.trim() || history.length > 0);
-  const showHistory = !query.trim() && history.length > 0;
+  const showDropdown = isOpen && (trimmedQuery || history.length > 0);
+  const showHistory = !trimmedQuery && history.length > 0;
   const hasResults =
     results &&
     GROUPS.some((g) => results[g].length > 0);
@@ -159,7 +187,7 @@ export function GlobalSearchBar({
     ? "Searching."
     : showHistory
       ? `${history.length} recent searches available. ${selectedAnnouncement}`
-      : query.trim() && results
+      : trimmedQuery && results
         ? `${flatResults.length} ${flatResults.length === 1 ? "result" : "results"} available. ${selectedAnnouncement}`
         : "";
   const optionId = (index: number) => `${listboxId}-option-${index}`;
@@ -171,7 +199,7 @@ export function GlobalSearchBar({
       role="search"
       aria-label="Global search"
     >
-      <div className="gsb__input-wrap">
+      <form className="gsb__input-wrap" role="search" onSubmit={handleSubmit}>
         {/* Search icon */}
         <svg
           className="gsb__icon"
@@ -212,6 +240,7 @@ export function GlobalSearchBar({
           placeholder={placeholder}
           value={query}
           onChange={(e) => {
+            // Only update the query here — history is written on submit.
             setQuery(e.target.value);
             setIsOpen(true);
             setActiveIndex(-1);
@@ -239,7 +268,15 @@ export function GlobalSearchBar({
             ×
           </button>
         )}
-      </div>
+
+        <button
+          type="submit"
+          className="gsb__submit"
+          aria-label="Submit search"
+        >
+          Search
+        </button>
+      </form>
 
       <span className="gsb__sr-only" role="status" aria-live="polite" aria-atomic="true">
         {searchAnnouncement}
@@ -286,7 +323,7 @@ export function GlobalSearchBar({
           )}
 
           {/* Search results grouped by type */}
-          {!showHistory && query.trim() && !loading && hasResults &&
+          {!showHistory && trimmedQuery && !loading && hasResults &&
             GROUPS.map((group) => {
               const items = results![group];
               if (!items.length) return null;
@@ -327,7 +364,7 @@ export function GlobalSearchBar({
             })}
 
           {/* No results */}
-          {!showHistory && query.trim() && !loading && !hasResults && (
+          {!showHistory && trimmedQuery && !loading && !hasResults && (
             <li className="gsb__empty" role="option" aria-selected={false}>
               No results for "{query}"
             </li>

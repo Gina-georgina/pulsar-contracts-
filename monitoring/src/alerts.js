@@ -32,22 +32,47 @@ async function alert(type, message, data = {}) {
   const prefix = type === "info" ? "[INFO]" : "[ALERT]";
   console.log(`${prefix} [${type}] ${message}`, JSON.stringify(data));
 
-  // Optionally POST to a webhook.
+  // Optionally POST to a webhook, with retries.
   if (config.alertWebhookUrl) {
-    try {
-      const { default: fetch } = await import("node-fetch");
-      const res = await fetch(config.alertWebhookUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      if (!res.ok) {
-        console.error(
-          `[alerts] Webhook POST failed: ${res.status} ${res.statusText}`
+    const MAX_ATTEMPTS = 3;
+    const RETRY_DELAY_MS = 5000;
+
+    const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+    let lastError = null;
+
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      try {
+        const { default: fetch } = await import("node-fetch");
+        const res = await fetch(config.alertWebhookUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        if (res.ok) {
+          lastError = null;
+          break;
+        }
+        lastError = new Error(
+          `Webhook POST failed: ${res.status} ${res.statusText}`
         );
+      } catch (err) {
+        lastError = err;
       }
-    } catch (err) {
-      console.error("[alerts] Failed to send webhook alert:", err.message);
+
+      if (attempt < MAX_ATTEMPTS) {
+        console.error(
+          `[alerts] Webhook retry ${attempt}/${MAX_ATTEMPTS} after failure: ${lastError.message}`
+        );
+        await sleep(RETRY_DELAY_MS);
+      }
+    }
+
+    if (lastError) {
+      console.error(
+        `[alerts] Webhook alert failed after ${MAX_ATTEMPTS} attempts, alert dropped:`,
+        lastError.message
+      );
     }
   }
 }

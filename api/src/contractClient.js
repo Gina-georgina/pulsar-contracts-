@@ -2,7 +2,7 @@
  * Stellar contract client — thin wrapper around stellar-sdk contract invocation.
  * Reads CONTRACT_ID, STELLAR_NETWORK, STELLAR_RPC_URL from environment.
  */
-import { Contract, rpc, TransactionBuilder, Networks, Keypair } from "@stellar/stellar-sdk";
+import { Contract, rpc, TransactionBuilder, Networks, Keypair, StrKey } from "@stellar/stellar-sdk";
 
 const CONTRACT_ID = process.env.CONTRACT_ID;
 const NETWORK = process.env.STELLAR_NETWORK || "testnet";
@@ -72,9 +72,56 @@ export async function invoke(fn, args = []) {
   return getResult.returnValue;
 }
 
+/**
+ * Invoke process_payment_with_signature for a single order and return a
+ * structured result instead of throwing. Used by batch submission so a single
+ * failing order does not abort the whole batch.
+ *
+ * @param {object} order - payment order payload
+ * @returns {Promise<{success: boolean, result?: any, error?: string}>}
+ */
+export async function invokePaymentWithSignature(order) {
+  try {
+    const result = await invoke("process_payment_with_signature", order.args ?? []);
+    return { success: true, result };
+  } catch (err) {
+    return { success: false, error: err?.message ?? String(err) };
+  }
+}
+
+/**
+ * Submit each order as a separate Soroban transaction, collecting per-order
+ * success/failure. Never throws for individual order failures; the caller
+ * receives a result entry for every order in the input array.
+ *
+ * @param {Array<object>} orders - array of payment orders
+ * @returns {Promise<Array<{success: boolean, result?: any, error?: string}>>}
+ */
+export async function batchInvoke(orders = []) {
+  const results = [];
+  for (const order of orders) {
+    results.push(await invokePaymentWithSignature(order));
+  }
+  return results;
+}
+
 async function _sourceAccount() {
   const keypair = SOURCE_SECRET ? Keypair.fromSecret(SOURCE_SECRET) : Keypair.random();
   return server().getAccount(keypair.publicKey()).catch(() => ({ accountId: () => keypair.publicKey(), sequenceNumber: () => "0", incrementSequenceNumber: () => {} }));
+}
+
+/**
+ * Validate that a value is a well-formed Stellar Ed25519 public key (G-address).
+ * @param {unknown} address
+ * @returns {boolean}
+ */
+export function validateStellarAddress(address) {
+  if (typeof address !== "string") return false;
+  try {
+    return StrKey.isValidEd25519PublicKey(address);
+  } catch {
+    return false;
+  }
 }
 
 export class ContractError extends Error {

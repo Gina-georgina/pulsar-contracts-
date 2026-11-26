@@ -10,8 +10,9 @@
 
 "use strict";
 
-const { describe, it, beforeEach } = require("node:test");
+const { describe, it, beforeEach, afterEach } = require("node:test");
 const assert = require("node:assert/strict");
+const Module = require("node:module");
 
 // ── Metrics ────────────────────────────────────────────────────────────────
 
@@ -169,5 +170,130 @@ describe("Config", () => {
     const cfg = require("./config");
     assert.equal(typeof cfg.largePaymentThreshold, "bigint");
     assert.ok(cfg.largePaymentThreshold > 0n);
+  });
+});
+
+// ── Alert webhook retry logic ──────────────────────────────────────────────
+
+/**
+ * Loads a fresh copy of alerts.js with `node-fetch` stubbed out and the
+ * retry delay shortened so tests don't wait 5 real seconds per retry.
+ *
+ * @param {Function} fetchImpl  Stub for the fetch call.
+ * @returns {{ mod: object, logs: { info: string[], error: string[] } }}
+ */
+function loadAlertsWithStub(fetchImpl) {
+  const alertsPath = require.resolve("./alerts");
+  const fetchPath = require.resolve("node-fetch");
+
+  const logs = { info: [], error: [] };
+  const originalLog = console.log;
+  const originalError = console.error;
+  console.log = (...args) => logs.info.push(args.join(" "));
+  console.error = (...args) => logs.error.push(args.join(" "));
+
+  const originalLoad = Module._load;
+  Module._load = function (request, parent, isMain) {
+    if (request === "node-fetch") return fetchImpl;
+    return originalLoad.call(this, request, parent, isMain);
+  };
+
+  delete require.cache[alertsPath];
+  delete require.cache[fetchPath];
+
+  let mod;
+  try {
+    mod = require("./alerts");
+  } finally {
+    Module._load = originalLoad;
+    console.log = originalLog;
+    console.error = originalError;
+  }
+
+  return { mod, logs };
+}
+
+describe("Alert webhook retry", () => {
+  let savedWebhookUrl;
+  let savedRetryDelay;
+
+  beforeEach(() => {
+    savedWebhookUrl = process.env.ALERT_WEBHOOK_URL;
+    savedRetryDelay = process.env.ALERT_WEBHOOK_RETRY_DELAY_MS;
+    process.env.ALERT_WEBHOOK_URL = "https://example.test/webhook";
+    // Shorten the retry delay so tests run fast.
+    process.env.ALERT_WEBHOOK_RETRY_DELAY_MS = "1";
+  });
+
+  afterEach(() => {
+    if (savedWebhookUrl === undefined) delete process.env.ALERT_WEBHOOK_URL;
+    else process.env.ALERT_WEBHOOK_URL = savedWebhookUrl;
+
+    if (savedRetryDelay === undefined)
+      delete process.env.ALERT_WEBHOOK_RETRY_DELAY_MS;
+    else process.env.ALERT_WEBHOOK_RETRY_DELAY_MS = savedRetryDelay;
+
+    delete require.cache[require.resolve("./alerts")];
+  });
+
+  it("retries failed POSTs and succeeds on a later attempt", async () => {
+    let attempts = 0;
+    const fetchStub = async () => {
+      attempts += 1;
+      if (attempts < 3) {
+        throw new Error("webhook unavailable");
+      }
+      return { ok: true, status: 200 };
+    };
+
+    const { mod, logs } = loadAlertsWithStub(fetchStub);
+    await mod.sendAlert({ type: "test", message: "hello" });
+
+    assert.equal(attempts, 3, "should attempt until success (3 attempts)");
+    assert.ok(
+      logs.info.some((line) => /retry/i.test(line)),
+      "each retry attempt should be logged"
+    );
+    assert.equal(
+      logs.error.length,
+      0,
+      "no final error should be logged when a retry succeeds"
+    );
+  });
+
+  it("logs a final error when all retry attempts fail", async () => {
+    let attempts = 0;
+    const fetchStub = async () => {
+      attempts += 1;
+      throw new Error("webhook unavailable");
+    };
+
+    const { mod, logs } = loadAlertsWithStub(fetchStub);
+    await mod.sendAlert({ type: "test", message: "hello" });
+
+    // 1 initial attempt + up to 3 retries.
+    assert.equal(attempts, 4, "should make the initial attempt plus 3 retries");
+    assert.ok(
+      logs.info.some((line) => /retry/i.test(line)),
+      "each retry attempt should be logged"
+    );
+    assert.ok(
+      logs.error.some((line) => /fail|error|exhaust/i.test(line)),
+      "a final error should be logged when all retries fail"
+    );
+  });
+
+  it("does not attempt a POST when no webhook URL is configured", async () => {
+    delete process.env.ALERT_WEBHOOK_URL;
+    let attempts = 0;
+    const fetchStub = async () => {
+      attempts += 1;
+      return { ok: true, status: 200 };
+    };
+
+    const { mod } = loadAlertsWithStub(fetchStub);
+    await mod.sendAlert({ type: "test", message: "hello" });
+
+    assert.equal(attempts, 0, "no POST should be made without a webhook URL");
   });
 });

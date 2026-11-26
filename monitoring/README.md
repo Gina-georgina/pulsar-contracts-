@@ -172,20 +172,50 @@ Adjust the ping interval via the `PING_INTERVAL_MS` environment variable
 
 The monitor is a long-running Node.js process. Recommended deployment options:
 
-- **Docker** — wrap in a minimal `node:18-alpine` image and deploy alongside
-  your existing infrastructure.
+- **Docker** — use the provided `monitoring/Dockerfile` (minimal
+  `node:18-alpine` image) and deploy alongside your existing infrastructure.
 - **systemd** — use a unit file with `Restart=always` for bare-metal servers.
 - **Cloud Run / ECS / Fly.io** — deploy as a single-container service.
 
-A minimal `Dockerfile` example:
+### Docker
 
-```dockerfile
-FROM node:18-alpine
-WORKDIR /app
-COPY package*.json ./
-RUN npm ci --omit=dev
-COPY src/ ./src/
-CMD ["node", "src/monitor.js"]
+A `Dockerfile` is included in this directory. Build and run it directly:
+
+```bash
+cd monitoring
+
+# Build the image
+docker build -t pulsar-monitor .
+
+# Run with your .env file (see "Example .env file" above)
+docker run --env-file .env pulsar-monitor
+```
+
+On startup the container logs a message including the configured Horizon URL,
+for example:
+
+```
+[monitor] starting — contract=C... horizon=https://horizon-testnet.stellar.org
+```
+
+If the container exits immediately, check that `CONTRACT_ID` is set and that
+`HORIZON_URL` is reachable from inside the container.
+
+### Docker Compose
+
+The `monitoring` service is defined in the repository root
+`docker-compose.yml`, with all environment variables bound from your shell or
+a root-level `.env` file. From the repository root:
+
+```bash
+docker compose up monitoring
+```
+
+To run it in the background:
+
+```bash
+docker compose up -d monitoring
+docker compose logs -f monitoring
 ```
 
 ---

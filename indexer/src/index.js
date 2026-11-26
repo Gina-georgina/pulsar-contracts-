@@ -14,7 +14,70 @@ const db = new Pool({ connectionString: DATABASE_URL });
 const app = express();
 app.use(express.json());
 
+// ── Graceful shutdown state ───────────────────────────────────────────────────
+
+const SHUTDOWN_TIMEOUT_MS = 10_000;
+let shuttingDown = false;
+let inFlight = 0;
+let pollTimer = null;
+let server = null;
+
+function trackOperation() {
+  inFlight += 1;
+  let done = false;
+  return () => {
+    if (done) return;
+    done = true;
+    inFlight -= 1;
+  };
+}
+
+async function gracefulShutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`Received ${signal}, starting graceful shutdown (timeout ${SHUTDOWN_TIMEOUT_MS}ms)`);
+
+  // Stop scheduling new polls.
+  if (pollTimer) {
+    clearTimeout(pollTimer);
+    pollTimer = null;
+  }
+
+  // Wait for in-flight operations to drain, up to the timeout.
+  const deadline = Date.now() + SHUTDOWN_TIMEOUT_MS;
+  while (inFlight > 0 && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  if (inFlight > 0) {
+    console.warn(`Shutdown timeout reached with ${inFlight} operation(s) still in flight`);
+  }
+
+  // Stop accepting new HTTP connections.
+  if (server) {
+    await new Promise((resolve) => server.close(resolve));
+  }
+
+  try {
+    await db.end();
+  } catch (err) {
+    console.error('Error closing database pool:', err.message);
+  }
+
+  console.log('Graceful shutdown complete');
+  process.exit(0);
+}
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
 // ── REST API ──────────────────────────────────────────────────────────────────
+
+app.get('/health', (req, res) => {
+  if (shuttingDown) {
+    return res.status(503).json({ status: 'shutting_down' });
+  }
+  res.json({ status: 'ok' });
+});
 
 app.get('/events', async (req, res) => {
   const { type, limit = 50, offset = 0 } = req.query;
@@ -34,6 +97,15 @@ app.get('/events/:type', async (req, res) => {
     [req.params.type]
   );
   res.json(rows);
+});
+
+app.get('/health', async (req, res) => {
+  try {
+    await db.query('SELECT 1');
+    res.status(200).json({ status: 'ok' });
+  } catch (err) {
+    res.status(503).json({ status: 'down' });
+  }
 });
 
 app.listen(PORT, () => console.log(`API listening on port ${PORT}`));
@@ -117,33 +189,34 @@ async function handlePaymentArchived(event) {
 }
 
 async function poll() {
-  const server = new SorobanRpc.Server(HORIZON_URL);
+  if (shuttingDown) return;
+
+  const rpc = new SorobanRpc.Server(HORIZON_URL);
   const startLedger = (await getLastIndexedLedger()) + 1;
 
   console.log(`Polling events from ledger ${startLedger} for contract ${CONTRACT_ID}`);
 
   try {
-    const response = await server.getEvents({
+    const response = await rpc.getEvents({
       startLedger,
       filters: [{ type: 'contract', contractIds: [CONTRACT_ID] }],
       limit: 200,
     });
 
     for (const event of response.events) {
-      const topics = event.topic.map(t => t.toString());
-      const type = event.topic[0]?.toString() ?? 'unknown';
-      const saved = {
-        ledger: event.ledger,
-        txHash: event.txHash,
-        contractId: event.contractId,
-        type,
-        topic: topics,
-        value: event.value,
-      };
-      await saveEvent(saved);
-
-      if (type === 'payment_archived' || topics.includes('payment_archived')) {
-        await handlePaymentArchived(saved);
+      if (shuttingDown) break;
+      const done = trackOperation();
+      try {
+        await saveEvent({
+          ledger: event.ledger,
+          txHash: event.txHash,
+          contractId: event.contractId,
+          type: event.topic[0]?.toString() ?? 'unknown',
+          topic: event.topic.map(t => t.toString()),
+          value: event.value,
+        });
+      } finally {
+        done();
       }
     }
 
@@ -154,7 +227,8 @@ async function poll() {
     console.error('Poll error:', err.message);
   }
 
-  setTimeout(poll, 6000); // poll every ~1 ledger close
+  if (shuttingDown) return;
+  pollTimer = setTimeout(poll, 6000); // poll every ~1 ledger close
 }
 
 ensurePaymentsTable()
