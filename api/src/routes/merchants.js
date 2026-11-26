@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { nativeToScVal, xdr } from "@stellar/stellar-sdk";
-import { invoke, view } from "../contractClient.js";
+import { invoke, view, validateStellarAddress } from "../contractClient.js";
 
 const router = Router();
 
@@ -13,6 +13,14 @@ router.post("/", async (req, res, next) => {
     const { merchant_address, name, description, contact_info, category } = req.body;
     if (!merchant_address || !name || !description || !contact_info || !category) {
       return res.status(422).json({ error: { code: "InvalidInput", message: "Missing required fields" } });
+    }
+    if (!validateStellarAddress(merchant_address)) {
+      return res.status(422).json({
+        error: {
+          code: "InvalidAddress",
+          message: "Invalid Stellar address format for 'merchant_address': expected a 56-character base32 string starting with 'G'",
+        },
+      });
     }
     await invoke("register_merchant", [
       nativeToScVal(merchant_address, { type: "address" }),
@@ -33,6 +41,14 @@ router.post("/", async (req, res, next) => {
  */
 router.get("/:id", async (req, res, next) => {
   try {
+    if (!validateStellarAddress(req.params.id)) {
+      return res.status(422).json({
+        error: {
+          code: "InvalidAddress",
+          message: "Invalid Stellar address format for 'id': expected a 56-character base32 string starting with 'G'",
+        },
+      });
+    }
     const result = await view("get_merchant", [
       nativeToScVal(req.params.id, { type: "address" }),
     ]);

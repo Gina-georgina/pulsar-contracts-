@@ -2,7 +2,7 @@ import express from "express";
 import { registerWebhook, getWebhook, deleteWebhook } from "./store";
 import { checkDependencies, ComponentStatus } from "./health";
 import * as dlq from "./dlq";
-import { deliver } from "./deliver";
+import { deliver, validateWebhookUrlScheme } from "./deliver";
 
 export function createRouter(rpcUrl: string, contractId: string): express.Router {
   const router = express.Router();
@@ -112,6 +112,16 @@ export function createRouter(rpcUrl: string, contractId: string): express.Router
     } catch {
       res.status(400).json({ error: "url is not a valid URL" });
       return;
+    }
+    const schemeCheck = validateWebhookUrlScheme(url);
+    if (!schemeCheck.ok) {
+      res.status(400).json({ error: schemeCheck.error });
+      return;
+    }
+    if (schemeCheck.insecure) {
+      console.warn(
+        `[webhook] Registering insecure (http:) webhook URL for merchant ${merchantAddress}: ${url}`
+      );
     }
     const reg = registerWebhook(merchantAddress, url);
     res.status(201).json(reg);

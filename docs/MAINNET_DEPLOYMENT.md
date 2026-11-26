@@ -191,38 +191,130 @@ Record, outside your terminal history:
 Only after this verification step should the mainnet contract ID be shared
 with downstream integrators or put in front of real payment volume.
 
-## Production container image
+## Off-chain service Docker images
 
-The repository ships a multi-stage [`Dockerfile`](../Dockerfile) for
-production use. Do **not** use `Dockerfile.dev` in production — it installs
-dev dependencies and debug tooling.
-
-Build the image from the exact commit/tag being deployed (the build stage
-compiles the release WASM; the runtime stage is based on
-`debian:bookworm-slim` and contains only the compiled WASM binary and its
-config — no `cargo`, no `npm`, no dev dependencies):
+Each release tag publishes pre-built Docker images for the off-chain
+services (`indexer`, `webhook`, and `analytics-service`) to the GitHub
+Container Registry (ghcr.io). You do not need to clone the repository or
+build from source to self-host them — pull the image matching the release
+you are running against:
 
 ```bash
-docker build -t pulsar-contract:<tag> .
+# Replace <org>/<repo> with the GitHub owner/repository and <version> with
+# the release semver tag (e.g. v1.2.3). The `latest` tag tracks the most
+# recent release.
+docker pull ghcr.io/<org>/<repo>/indexer:<version>
+docker pull ghcr.io/<org>/<repo>/webhook:<version>
+docker pull ghcr.io/<org>/<repo>/analytics-service:<version>
 ```
 
-Run it (mount the config directory and pass any required environment
-variables):
+Images are tagged with both the release semver tag and `latest`. For
+production, always pin an explicit semver tag rather than `latest` so that
+redeploys are reproducible and rollbacks are a tag change away.
+
+If the packages are private, authenticate first with a GitHub token that has
+`read:packages` scope:
 
 ```bash
-docker run --rm \
-  -v "$(pwd)/config:/app/config:ro" \
-  --env-file .env.production \
-  pulsar-contract:<tag>
+echo "$GHCR_TOKEN" | docker login ghcr.io -u <github-username> --password-stdin
 ```
 
-CI builds this production image and scans it with Trivy on every push; a
-build or scan failure blocks the pipeline. To reproduce the scan locally:
+### Production `docker-compose.override.yml`
+
+The repository ships a base `docker-compose.yml` for local development. For
+production, layer a `docker-compose.override.yml` next to it that swaps the
+locally built services for the published images, pins the release tag, and
+sets production environment variables and port mappings. Compose merges the
+override automatically when you run `docker compose up` from the same
+directory.
+
+```yaml
+# docker-compose.override.yml — production overrides
+services:
+  indexer:
+    image: ghcr.io/<org>/<repo>/indexer:${RELEASE_TAG:?set RELEASE_TAG to the release semver}
+    build: !reset null
+    restart: unless-stopped
+    environment:
+      RUST_LOG: info
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL}
+      STELLAR_RPC_URL: ${STELLAR_RPC_URL:-https://mainnet.sorobanrpc.com}
+      STELLAR_NETWORK: public
+      CONTRACT_ID: ${CONTRACT_ID:?set CONTRACT_ID to the deployed contract address}
+      START_LEDGER: ${START_LEDGER:-0}
+    ports:
+      - "8081:8081"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8081/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  webhook:
+    image: ghcr.io/<org>/<repo>/webhook:${RELEASE_TAG:?set RELEASE_TAG to the release semver}
+    build: !reset null
+    restart: unless-stopped
+    environment:
+      RUST_LOG: info
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL}
+      WEBHOOK_SIGNING_SECRET: ${WEBHOOK_SIGNING_SECRET:?set WEBHOOK_SIGNING_SECRET}
+      WEBHOOK_MAX_RETRIES: ${WEBHOOK_MAX_RETRIES:-5}
+    ports:
+      - "8082:8082"
+    depends_on:
+      - indexer
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8082/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  analytics-service:
+    image: ghcr.io/<org>/<repo>/analytics-service:${RELEASE_TAG:?set RELEASE_TAG to the release semver}
+    build: !reset null
+    restart: unless-stopped
+    environment:
+      RUST_LOG: info
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL}
+      ANALYTICS_PORT: "8083"
+    ports:
+      - "8083:8083"
+    depends_on:
+      - indexer
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8083/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+```
+
+Set the required values in a `.env` file next to the compose files (never
+commit it), then start the stack:
 
 ```bash
-docker build -t pulsar-contract:<tag> .
-trivy image --severity HIGH,CRITICAL pulsar-contract:<tag>
+cat > .env <<'EOF'
+RELEASE_TAG=v1.2.3
+CONTRACT_ID=C...
+DATABASE_URL=postgres://user:pass@db:5432/payments
+WEBHOOK_SIGNING_SECRET=change-me
+EOF
+
+docker compose pull
+docker compose up -d
 ```
+
+Notes for production:
+- The `build: !reset null` lines disable the base file's local build context
+  so Compose only ever pulls the pinned image. If your Compose version does
+  not support `!reset`, remove the `build:` keys from the base file or run
+  with `--no-build`.
+- The `${VAR:?message}` syntax makes Compose fail fast if a required value
+  is missing, rather than starting a service with an empty secret.
+- Port mappings above are the services' defaults; adjust them to match your
+  reverse proxy / load balancer layout. Do not expose these ports directly
+  to the public internet — terminate TLS at a proxy in front of them.
+- To roll back, change `RELEASE_TAG` to the previous release and re-run
+  `docker compose pull && docker compose up -d`.
 
 ## See also
 
