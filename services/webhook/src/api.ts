@@ -3,7 +3,7 @@ import crypto from "crypto";
 import { registerWebhook, getWebhook, deleteWebhook } from "./store";
 import { checkDependencies, ComponentStatus } from "./health";
 import * as dlq from "./dlq";
-import { deliver } from "./deliver";
+import { deliver, validateWebhookUrlScheme } from "./deliver";
 
 // ── Webhook registration handshake ──────────────────────────────────────────
 //
@@ -176,56 +176,17 @@ export function createRouter(rpcUrl: string, contractId: string): express.Router
       res.status(400).json({ error: "url is not a valid URL" });
       return;
     }
-
-    pruneExpiredPending();
-
-    const token = crypto.randomBytes(32).toString("hex");
-    const key = pendingKey(merchantAddress);
-    pendingRegistrations.set(key, {
-      merchantAddress,
-      url,
-      token,
-      createdAt: Date.now(),
-    });
-
-    const challengeDelivered = await sendChallenge(url, merchantAddress, token);
-
-    res.status(202).json({
-      status: "pending",
-      merchantAddress,
-      url,
-      challengeDelivered,
-      message:
-        "Registration pending verification. Echo the challenge token back via " +
-        "POST /webhooks/:merchantAddress/verify to confirm ownership of the URL.",
-    });
-  });
-
-  // POST /webhooks/:merchantAddress/verify — complete the registration handshake.
-  // Body: { token: string }
-  router.post("/webhooks/:merchantAddress/verify", (req, res) => {
-    const { token } = req.body as { token?: string };
-    if (!token) {
-      res.status(400).json({ error: "token is required" });
+    const schemeCheck = validateWebhookUrlScheme(url);
+    if (!schemeCheck.ok) {
+      res.status(400).json({ error: schemeCheck.error });
       return;
     }
-
-    pruneExpiredPending();
-
-    const key = pendingKey(req.params.merchantAddress);
-    const pending = pendingRegistrations.get(key);
-    if (!pending) {
-      res.status(404).json({ error: "No pending registration for this merchant" });
-      return;
+    if (schemeCheck.insecure) {
+      console.warn(
+        `[webhook] Registering insecure (http:) webhook URL for merchant ${merchantAddress}: ${url}`
+      );
     }
-
-    if (!tokensMatch(pending.token, token)) {
-      res.status(403).json({ error: "Invalid verification token" });
-      return;
-    }
-
-    pendingRegistrations.delete(key);
-    const reg = registerWebhook(pending.merchantAddress, pending.url);
+    const reg = registerWebhook(merchantAddress, url);
     res.status(201).json(reg);
   });
 

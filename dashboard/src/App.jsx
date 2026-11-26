@@ -4,9 +4,15 @@ import PaymentHistory from './components/PaymentHistory';
 import RefundManager from './components/RefundManager';
 import MerchantProfile from './components/MerchantProfile';
 import AdminPanel from './components/AdminPanel';
+import MobileNav from './components/MobileNav';
 import './App.css';
 
-const TABS = ['Payments', 'Refunds', 'Profile', 'Admin'];
+const TABS = [
+  { id: 'Payments', label: 'Payments' },
+  { id: 'Refunds', label: 'Refunds' },
+  { id: 'Profile', label: 'Profile' },
+  { id: 'Admin', label: 'Admin' },
+];
 
 export default function App() {
   const {
@@ -91,25 +97,15 @@ export default function App() {
         </main>
       ) : (
         <>
-          <nav aria-label="Dashboard sections">
-            <ul role="tablist" className="tabs" aria-label="Dashboard sections">
-              {TABS.map(t => (
-                <li key={t.id} role="presentation">
-                  <button
-                    id={`tab-${t.id}`}
-                    role="tab"
-                    aria-selected={tab === t.id}
-                    aria-controls={`panel-${t.id}`}
-                    onClick={() => setTab(t.id)}
-                  >
-                    {t.label}
-                  </button>
-                </li>
-              ))}
-            </ul>
-          </nav>
+          <MobileNav tabs={TABS} activeTab={tab} onSelect={setTab} />
 
-          <div role="tabpanel" aria-label={tab} className="tab-content">
+          <div
+            id={`panel-${tab}`}
+            role="tabpanel"
+            aria-labelledby={`tab-${tab}`}
+            aria-label={tab}
+            className="tab-content"
+          >
             {tab === 'Payments' && <PaymentHistory merchantAddress={publicKey} />}
             {tab === 'Refunds'  && <RefundManager  merchantAddress={publicKey} />}
             {tab === 'Profile'  && <MerchantProfile publicKey={publicKey} />}
