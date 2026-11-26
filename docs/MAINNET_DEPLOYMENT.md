@@ -320,6 +320,7 @@ Notes for production:
 
 - [`README.md`](../README.md) — local/testnet setup, environment seeding,
   general contract usage.
+- [`Dockerfile`](../Dockerfile) — multi-stage production image definition.
 - [`docs/reproducible-builds.md`](reproducible-builds.md) — rebuilding the
   WASM byte-for-byte to verify what was deployed.
 - [`docs/security-audit.md`](security-audit.md) — audit status and scope.
