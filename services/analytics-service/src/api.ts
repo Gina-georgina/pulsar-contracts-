@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-import express, { Request, Response } from "express";
+import express, { Request, Response, NextFunction } from "express";
 import { Pool } from "pg";
 import { AnalyticsCache, cacheTtlFromEnv } from "./cache";
 
@@ -41,10 +41,56 @@ function cacheKeyFor(req: Request): string {
   return `${req.path}?${sorted}`;
 }
 
+/**
+ * Loads the set of valid analytics API keys from the environment.
+ *
+ * Keys are provided via `ANALYTICS_API_KEYS` as a comma-separated list
+ * (e.g. `ANALYTICS_API_KEYS=key1,key2`). In production this value should be
+ * sourced from a secrets manager rather than committed to source control.
+ */
+function loadApiKeys(): Set<string> {
+  const raw = process.env.ANALYTICS_API_KEYS ?? "";
+  return new Set(
+    raw
+      .split(",")
+      .map((k) => k.trim())
+      .filter((k) => k.length > 0)
+  );
+}
+
+/**
+ * Express middleware that requires a valid API key on every analytics route.
+ *
+ * Expects `Authorization: Bearer <key>`. Responds with 401 when no key is
+ * supplied and 403 when the supplied key is not recognized.
+ */
+export function requireApiKey(validKeys: Set<string>) {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    const header = req.header("authorization") ?? "";
+    const match = /^Bearer\s+(.+)$/i.exec(header.trim());
+    const provided = match ? match[1].trim() : "";
+
+    if (!provided) {
+      res.status(401).json({ error: "Missing API key" });
+      return;
+    }
+
+    if (!validKeys.has(provided)) {
+      res.status(403).json({ error: "Invalid API key" });
+      return;
+    }
+
+    next();
+  };
+}
+
 export function createAnalyticsRouter(databaseUrl: string): express.Router {
   const router = express.Router();
   const db = new Pool({ connectionString: databaseUrl });
   const cache = new AnalyticsCache(cacheTtlFromEnv());
+
+  // Require a valid API key on all analytics routes.
+  router.use("/analytics", requireApiKey(loadApiKeys()));
 
   router.get("/analytics/summary", async (req, res) => {
     try {
@@ -218,69 +264,7 @@ export function createAnalyticsRouter(databaseUrl: string): express.Router {
       res.json(result);
     } catch (err) {
       console.error(err);
-      res.status(500).json({ error: "Failed to compute per-token breakdown" });
-    }
-  });
-
-  /**
-   * GET /analytics/timeseries
-   *
-   * Returns a time-series aggregation of payment count and volume with a
-   * configurable granularity.
-   *
-   * Query params:
-   *   - granularity  one of "hour" | "day" | "week" (default "day")
-   *   - startDate    ISO date string (default 2024-01-01)
-   *   - endDate      ISO date string (default today)
-   *   - token        optional token filter
-   *
-   * Example response (granularity=day):
-   *   {
-   *     "granularity": "day",
-   *     "series": [
-   *       { "bucket": "2025-01-01", "payment_count": 3, "payment_volume": "600" },
-   *       { "bucket": "2025-01-02", "payment_count": 5, "payment_volume": "1100" }
-   *     ],
-   *     "cache": { "enabled": true, "ttl_seconds": 60 }
-   *   }
-   */
-  router.get("/analytics/timeseries", async (req, res) => {
-    try {
-      const { startDate, endDate, token } = req.query;
-      const start = startDate ? String(startDate) : "2024-01-01";
-      const end = endDate ? String(endDate) : defaultEnd();
-      const granularity = parseGranularity(req.query.granularity);
-      const unit = DATE_TRUNC_UNIT[granularity];
-
-      const result = await cache.getOrCompute(cacheKeyFor(req), async () => {
-        let query = `SELECT date_trunc('${unit}', created_at) AS bucket,
-                            COUNT(*)::int AS payment_count,
-                            COALESCE(SUM(amount), 0)::numeric AS payment_volume
-                       FROM payments
-                      WHERE created_at BETWEEN $1::date AND $2::date + INTERVAL '1 day'`;
-        const params: Array<string> = [start, end];
-
-        if (token) {
-          query += ` AND token = $3`;
-          params.push(String(token));
-        }
-
-        query += ` GROUP BY 1 ORDER BY 1`;
-        const { rows } = await db.query(query, params);
-        return {
-          granularity,
-          series: rows.map((r) => ({
-            bucket: r.bucket,
-            payment_count: r.payment_count,
-            payment_volume: r.payment_volume,
-          })),
-          cache: { enabled: cache.enabled, ttl_seconds: cache.ttlSeconds },
-        };
-      });
-      res.json(result);
-    } catch (err) {
-      console.error(err);
-      res.status(500).json({ error: "Failed to compute time-series aggregation" });
+      res.status(500).json({ error: "Failed to compute token analytics" });
     }
   });
 

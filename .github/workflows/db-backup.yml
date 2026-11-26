@@ -35,3 +35,85 @@ jobs:
         with:
           name: database-backup
           path: db-backups/
+
+  backup-integrity-test:
+    name: Backup integrity test
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: testuser
+          POSTGRES_PASSWORD: testpassword
+          POSTGRES_DB: testdb
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U testuser -d testdb"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql://testuser:testpassword@localhost:5432/testdb
+      BACKUP_RETENTION_DAYS: '1'
+      BACKUP_ROOT: './db-backups'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install PostgreSQL client
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+
+      - name: Seed test database
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL'
+          CREATE TABLE integrity_test (
+            id serial PRIMARY KEY,
+            name text NOT NULL,
+            created_at timestamptz NOT NULL DEFAULT now()
+          );
+          INSERT INTO integrity_test (name)
+          SELECT 'row-' || g FROM generate_series(1, 100) AS g;
+          SQL
+
+      - name: Run backup script
+        run: scripts/db-backup.sh
+
+      - name: Assert backup produced a non-empty dump
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          dumps=("$BACKUP_ROOT"/*.dump "$BACKUP_ROOT"/*.sql "$BACKUP_ROOT"/*.gz)
+          if [ ${#dumps[@]} -eq 0 ]; then
+            echo "::error::No backup dump file found in $BACKUP_ROOT"
+            ls -la "$BACKUP_ROOT" || true
+            exit 1
+          fi
+          for f in "${dumps[@]}"; do
+            size=$(stat -c%s "$f")
+            echo "Found backup file: $f ($size bytes)"
+            if [ "$size" -le 0 ]; then
+              echo "::error::Backup file $f is empty"
+              exit 1
+            fi
+          done
+
+      - name: Verify dump is parseable with pg_restore
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          dumps=("$BACKUP_ROOT"/*.dump)
+          if [ ${#dumps[@]} -eq 0 ]; then
+            echo "No custom-format (.dump) backup found; skipping pg_restore --list check"
+            exit 0
+          fi
+          for f in "${dumps[@]}"; do
+            echo "Verifying $f with pg_restore --list"
+            pg_restore --list "$f" > /dev/null
+          done
+
+      - name: Upload test backup artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integrity-test-backup
+          path: db-backups/
