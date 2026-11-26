@@ -4,6 +4,26 @@ A lightweight analytics service for Pulsar payment and refund data. Supports
 per-token payment breakdowns, configurable time-series aggregation, and an
 in-memory TTL cache for query results.
 
+## Authentication
+
+All `/analytics/*` endpoints require an API key. Send it as a bearer token in
+the `Authorization` header:
+
+```
+Authorization: Bearer <key>
+```
+
+Valid keys are read from the `ANALYTICS_API_KEYS` environment variable (a
+comma-separated list, so keys can be rotated without downtime). In production,
+supply this value from your secrets manager rather than committing it.
+
+Responses for missing or invalid credentials:
+
+| Condition | Status |
+|---|---|
+| No `Authorization` header / no bearer key | `401 Unauthorized` |
+| Key present but not in the allowlist | `403 Forbidden` |
+
 ## Endpoints
 
 - `GET /analytics/summary`
@@ -35,6 +55,7 @@ Returns payment volume and count broken down by token contract ID. The
 
 ```
 GET /analytics/tokens?startDate=2025-01-01&endDate=2025-01-31
+Authorization: Bearer <key>
 ```
 
 **Example response:**
@@ -68,6 +89,7 @@ Returns payment count and volume bucketed by a configurable time granularity.
 
 ```
 GET /analytics/timeseries?granularity=day&startDate=2025-01-01&endDate=2025-01-31
+Authorization: Bearer <key>
 ```
 
 **Example response:**
@@ -118,7 +140,9 @@ npm install
 cp .env.example .env
 ```
 
-Set `DATABASE_URL` to the analytics database connection string. Optionally set
+Set `DATABASE_URL` to the analytics database connection string. Set
+`ANALYTICS_API_KEYS` to one or more comma-separated API keys (required — all
+`/analytics/*` routes reject unauthenticated requests). Optionally set
 `ANALYTICS_CACHE_TTL_SECONDS` to enable result caching.
 
 ## Run

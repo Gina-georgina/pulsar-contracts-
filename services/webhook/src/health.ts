@@ -1,3 +1,4 @@
+import { createServer, IncomingMessage, ServerResponse } from "http";
 import { Pool } from "pg";
 import { rpc } from "@stellar/stellar-sdk";
 
@@ -6,6 +7,16 @@ const RPC_URL = process.env.RPC_URL ?? "https://soroban-testnet.stellar.org";
 const CONTRACT_ID = process.env.CONTRACT_ID ?? "";
 const pool = new Pool({ connectionString: DATABASE_URL });
 const DEFAULT_TIMEOUT_MS = 3000;
+
+let shuttingDown = false;
+
+export function setShuttingDown(value: boolean): void {
+  shuttingDown = value;
+}
+
+export function getShutdownStatus(): boolean {
+  return shuttingDown;
+}
 
 export type ComponentStatus = {
   status: "ok" | "down";
@@ -79,12 +90,69 @@ function downStatus(error: string): ComponentStatus {
   return { status: "down", error };
 }
 
-export async function checkDependencies(contractId = CONTRACT_ID, rpcUrl = RPC_URL): Promise<{ database: ComponentStatus; rpc: ComponentStatus; contract: ComponentStatus }> {
+export function checkShutdown(): ComponentStatus {
+  if (shuttingDown) {
+    return { status: "down", error: "shutting_down" };
+  }
+  return { status: "ok" };
+}
+
+export async function checkDependencies(contractId = CONTRACT_ID, rpcUrl = RPC_URL): Promise<{ database: ComponentStatus; rpc: ComponentStatus; contract: ComponentStatus; shutdown: ComponentStatus }> {
+  const shutdown = checkShutdown();
+
+  if (shuttingDown) {
+    const down = downStatus("shutting_down");
+    return { database: down, rpc: down, contract: down, shutdown };
+  }
+
   const [database, rpcHealth, contract] = await Promise.all([
     checkDatabase().catch((err) => downStatus(err instanceof Error ? err.message : String(err))),
     checkRpcHealth(rpcUrl).catch((err) => downStatus(err instanceof Error ? err.message : String(err))),
     checkContractHealth(contractId, rpcUrl).catch((err) => downStatus(err instanceof Error ? err.message : String(err))),
   ]);
 
-  return { database, rpc: rpcHealth, contract };
+  return { database, rpc: rpcHealth, contract, shutdown };
+}
+
+export type HealthReport = {
+  status: "ok" | "down";
+  components: { database: ComponentStatus; rpc: ComponentStatus; contract: ComponentStatus };
+};
+
+export async function buildHealthReport(contractId = CONTRACT_ID, rpcUrl = RPC_URL): Promise<HealthReport> {
+  const components = await checkDependencies(contractId, rpcUrl);
+  const status = Object.values(components).every((component) => component.status === "ok") ? "ok" : "down";
+  return { status, components };
+}
+
+export async function healthHandler(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const url = req.url ?? "/";
+  if (url.split("?")[0] !== "/health") {
+    res.writeHead(404, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "not found" }));
+    return;
+  }
+
+  try {
+    const report = await buildHealthReport();
+    res.writeHead(report.status === "ok" ? 200 : 503, { "Content-Type": "application/json" });
+    res.end(JSON.stringify(report));
+  } catch (err) {
+    res.writeHead(503, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ status: "down", error: err instanceof Error ? err.message : String(err) }));
+  }
+}
+
+export function createHealthServer(): ReturnType<typeof createServer> {
+  return createServer((req, res) => {
+    void healthHandler(req, res);
+  });
+}
+
+if (require.main === module) {
+  const port = Number(process.env.HEALTH_PORT ?? process.env.PORT ?? 3000);
+  const server = createHealthServer();
+  server.listen(port, () => {
+    console.log(`webhook health server listening on port ${port}`);
+  });
 }
