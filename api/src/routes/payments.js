@@ -1,14 +1,34 @@
 import { Router } from "express";
+import rateLimit from "express-rate-limit";
 import { nativeToScVal, scValToNative, xdr } from "@stellar/stellar-sdk";
 import { invoke, view } from "../contractClient.js";
 
 const router = Router();
 
+const PAYMENTS_RPM = parseInt(process.env.RATE_LIMIT_PAYMENTS_RPM, 10) || 20;
+
+const paymentsLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: PAYMENTS_RPM,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: (req, res, next, options) => {
+    const resetTime = req.rateLimit?.resetTime;
+    const retryAfter = resetTime
+      ? Math.max(0, Math.ceil((new Date(resetTime).getTime() - Date.now()) / 1000))
+      : Math.ceil(options.windowMs / 1000);
+    res.set("Retry-After", String(retryAfter));
+    res.status(429).json({
+      error: { code: "TooManyRequests", message: "Too many payment requests, please retry later" },
+    });
+  },
+});
+
 /**
  * POST /api/payments
  * Body: { payer, order: { order_id, merchant_address, payer, token, amount, description, expires_at }, signature }
  */
-router.post("/", async (req, res, next) => {
+router.post("/", paymentsLimiter, async (req, res, next) => {
   try {
     const { payer, order, signature } = req.body;
     if (!payer || !order || !signature) {

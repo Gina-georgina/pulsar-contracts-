@@ -497,6 +497,51 @@ jobs:
           NETWORK: testnet
         run: bash scripts/smoke-test.sh
 
+  # DOC-013: Generate the API reference from JSDoc/TSDoc comments and publish
+  # it to GitHub Pages on every push to main. The docs are built with the
+  # root `docs:generate` script (see package.json) and deployed as a Pages
+  # artifact using the official GitHub Pages actions.
+  docs:
+    name: Generate & Publish API Docs
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate API reference
+        run: npm run docs:generate
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/api
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
   # SEC-008: Scheduled weekly job that refreshes the cargo-audit advisory
   # database and re-runs the audit so that newly published advisories are
   # caught within a week, independently of any code change.
