@@ -1,18 +1,49 @@
 import { Router } from "express";
+import rateLimit from "express-rate-limit";
 import { nativeToScVal, scValToNative, xdr } from "@stellar/stellar-sdk";
-import { invoke, view } from "../contractClient.js";
+import { invoke, view, validateStellarAddress } from "../contractClient.js";
 
 const router = Router();
+
+const PAYMENTS_RPM = parseInt(process.env.RATE_LIMIT_PAYMENTS_RPM, 10) || 20;
+
+const paymentsLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: PAYMENTS_RPM,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: (req, res, next, options) => {
+    const resetTime = req.rateLimit?.resetTime;
+    const retryAfter = resetTime
+      ? Math.max(0, Math.ceil((new Date(resetTime).getTime() - Date.now()) / 1000))
+      : Math.ceil(options.windowMs / 1000);
+    res.set("Retry-After", String(retryAfter));
+    res.status(429).json({
+      error: { code: "TooManyRequests", message: "Too many payment requests, please retry later" },
+    });
+  },
+});
 
 /**
  * POST /api/payments
  * Body: { payer, order: { order_id, merchant_address, payer, token, amount, description, expires_at }, signature }
  */
-router.post("/", async (req, res, next) => {
+router.post("/", paymentsLimiter, async (req, res, next) => {
   try {
     const { payer, order, signature } = req.body;
     if (!payer || !order || !signature) {
       return res.status(422).json({ error: { code: "InvalidInput", message: "Missing required fields" } });
+    }
+    const addressFields = [
+      ["payer", payer],
+      ["order.merchant_address", order.merchant_address],
+      ["order.payer", order.payer],
+      ["order.token", order.token],
+    ];
+    for (const [field, value] of addressFields) {
+      if (!validateStellarAddress(value)) {
+        return res.status(422).json({ error: { code: "InvalidAddress", message: `${field} is not a valid Stellar address` } });
+      }
     }
     await invoke("process_payment_with_signature", [
       nativeToScVal(payer, { type: "address" }),
@@ -35,6 +66,9 @@ router.get("/:id", async (req, res, next) => {
     if (!caller) {
       return res.status(422).json({ error: { code: "InvalidInput", message: "caller query param required" } });
     }
+    if (!validateStellarAddress(caller)) {
+      return res.status(422).json({ error: { code: "InvalidAddress", message: "caller is not a valid Stellar address" } });
+    }
     const result = await view("get_payment_by_id", [
       nativeToScVal(caller, { type: "address" }),
       nativeToScVal(Buffer.from(req.params.id), { type: "bytes" }),
@@ -54,6 +88,9 @@ router.get("/", async (req, res, next) => {
     const { merchant, cursor, limit = 10, date_start, date_end, amount_min, amount_max, status = "Any", sort_field = "Date", sort_order = "Descending" } = req.query;
     if (!merchant) {
       return res.status(422).json({ error: { code: "InvalidInput", message: "merchant query param required" } });
+    }
+    if (!validateStellarAddress(merchant)) {
+      return res.status(422).json({ error: { code: "InvalidAddress", message: "merchant is not a valid Stellar address" } });
     }
 
     const filter = buildFilter({ date_start, date_end, amount_min, amount_max, status });

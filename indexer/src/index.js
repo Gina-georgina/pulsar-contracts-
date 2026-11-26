@@ -36,6 +36,15 @@ app.get('/events/:type', async (req, res) => {
   res.json(rows);
 });
 
+app.get('/health', async (req, res) => {
+  try {
+    await db.query('SELECT 1');
+    res.status(200).json({ status: 'ok' });
+  } catch (err) {
+    res.status(503).json({ status: 'down' });
+  }
+});
+
 app.listen(PORT, () => console.log(`API listening on port ${PORT}`));
 
 // ── Indexer ───────────────────────────────────────────────────────────────────

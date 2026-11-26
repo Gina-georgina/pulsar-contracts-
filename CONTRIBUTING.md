@@ -129,6 +129,27 @@ cannot bypass them. Maintainers (repo admins) can view and edit the settings
 at:
 `https://github.com/queenannaE/pulsar-contracts/settings/branches`
 
+## Tagging Convention
+
+Release tags **must** follow [semantic versioning](https://semver.org/) in the
+form `vMAJOR.MINOR.PATCH` — for example `v1.2.3`, `v0.1.0`, or `v2.0.0-rc.1`.
+
+The release workflow (`.github/workflows/release.yml`) only triggers on tags
+matching the pattern `v[0-9]+.[0-9]+.[0-9]+*`; any other tag (e.g. `test`,
+`v1`, or `release-1.2.3`) will not produce a release. A CI job step also
+validates the tag against this pattern before continuing, so a malformed tag
+fails the workflow rather than producing an unorderable artifact.
+
+```bash
+# Correct
+git tag v1.2.3
+git push origin v1.2.3
+
+# Incorrect — will not trigger a release
+git tag test
+git tag v1
+```
+
 ## Pull Request Guidelines
 
 - Keep PRs focused — one feature or fix per PR.
