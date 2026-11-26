@@ -11,6 +11,25 @@ import { useContractCall } from "../hooks/useContractCall";
 import { Spinner, ErrorMessage, SuccessBanner } from "./ContractCallStatus";
 import { server, contract } from "../contract";
 
+/** Supported Stellar networks for Freighter signing. */
+export const STELLAR_NETWORKS = ["TESTNET", "MAINNET", "FUTURENET"] as const;
+export type StellarNetwork = (typeof STELLAR_NETWORKS)[number];
+
+/** Compile-time guard: fails if a value is not a valid StellarNetwork. */
+function assertNetwork(network: string): StellarNetwork {
+  if (!(STELLAR_NETWORKS as readonly string[]).includes(network)) {
+    throw new Error(
+      `Invalid Stellar network "${network}". Expected one of: ${STELLAR_NETWORKS.join(", ")}.`,
+    );
+  }
+  return network as StellarNetwork;
+}
+
+/** Resolve the default network from VITE_STELLAR_NETWORK, falling back to TESTNET. */
+export const DEFAULT_STELLAR_NETWORK: StellarNetwork = assertNetwork(
+  (import.meta.env.VITE_STELLAR_NETWORK as string | undefined) ?? "TESTNET",
+);
+
 export interface CheckoutWidgetProps {
   /** Merchant-assigned order identifier. */
   orderId: string;
@@ -20,6 +39,11 @@ export interface CheckoutWidgetProps {
   token: string;
   /** Merchant's Stellar public key. */
   merchantAddress: string;
+  /**
+   * Stellar network used when signing with Freighter.
+   * Defaults to VITE_STELLAR_NETWORK (or "TESTNET" if unset).
+   */
+  network?: StellarNetwork;
   /** Called with the transaction hash on successful submission. */
   onSuccess?: (txHash: string) => void;
   /** Called with a human-readable error message on failure. */
@@ -50,9 +74,13 @@ export function CheckoutWidget({
   amount,
   token,
   merchantAddress,
+  network = DEFAULT_STELLAR_NETWORK,
   onSuccess,
   onError,
 }: CheckoutWidgetProps) {
+  // Compile-time guard: `network` is typed as StellarNetwork, so an invalid
+  // or missing value fails TypeScript compilation.
+  const resolvedNetwork: StellarNetwork = network;
   const [walletAddress, setWalletAddress] = useState<string | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const { state, execute, reset } = useContractCall<null>();

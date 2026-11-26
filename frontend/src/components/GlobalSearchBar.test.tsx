@@ -62,6 +62,50 @@ test("debounces API calls by 300ms minimum", async () => {
   expect(onSearch).toHaveBeenCalledWith("acm");
 });
 
+test("fires query only once within the debounce window", async () => {
+  const onSearch = makeSearch();
+  render(<GlobalSearchBar onSearch={onSearch} />);
+
+  const input = screen.getByRole("combobox");
+  fireEvent.change(input, { target: { value: "a" } });
+  fireEvent.change(input, { target: { value: "ac" } });
+  fireEvent.change(input, { target: { value: "acm" } });
+  fireEvent.change(input, { target: { value: "acme" } });
+
+  // Still inside the debounce window — no query yet
+  act(() => { jest.advanceTimersByTime(299); });
+  expect(onSearch).not.toHaveBeenCalled();
+
+  // Window elapses — exactly one query for the final value
+  act(() => { jest.advanceTimersByTime(1); });
+  await waitFor(() => expect(onSearch).toHaveBeenCalledTimes(1));
+  expect(onSearch).toHaveBeenCalledWith("acme");
+
+  // Further time passing does not trigger additional queries
+  act(() => { jest.advanceTimersByTime(1000); });
+  expect(onSearch).toHaveBeenCalledTimes(1);
+});
+
+test("shows in-flight indicator while search is pending", async () => {
+  let resolveSearch: (value: GroupedResults) => void = () => {};
+  const onSearch = jest.fn(
+    () => new Promise<GroupedResults>((resolve) => { resolveSearch = resolve; }),
+  );
+  render(<GlobalSearchBar onSearch={onSearch} />);
+
+  fireEvent.change(screen.getByRole("combobox"), { target: { value: "acme" } });
+  act(() => { jest.advanceTimersByTime(300); });
+
+  // Query fired but promise unresolved — in-flight status visible
+  await waitFor(() => expect(onSearch).toHaveBeenCalledTimes(1));
+  expect(screen.getByRole("status")).toBeInTheDocument();
+  expect(screen.getByRole("status")).toHaveTextContent(/searching/i);
+
+  // Resolve the promise — indicator disappears
+  await act(async () => { resolveSearch(sampleResults); });
+  expect(screen.queryByRole("status")).not.toBeInTheDocument();
+});
+
 test("shows results grouped by Merchants, Payments, Customers", async () => {
   const onSearch = makeSearch();
   render(<GlobalSearchBar onSearch={onSearch} />);
