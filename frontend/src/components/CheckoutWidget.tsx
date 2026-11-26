@@ -54,6 +54,7 @@ export function CheckoutWidget({
   onError,
 }: CheckoutWidgetProps) {
   const [walletAddress, setWalletAddress] = useState<string | null>(null);
+  const [confirmOpen, setConfirmOpen] = useState(false);
   const { state, execute, reset } = useContractCall<null>();
 
   async function connectWallet() {
@@ -144,7 +145,7 @@ export function CheckoutWidget({
                 Connected: <span className="font-mono">{walletAddress}</span>
               </p>
               <button
-                onClick={handlePay}
+                onClick={() => setConfirmOpen(true)}
                 disabled={state.status === "loading"}
                 className="w-full rounded-lg bg-[var(--color-primary)] hover:bg-[var(--color-primary-hover)] disabled:opacity-50 text-white py-2 px-4 text-sm font-medium transition-colors flex items-center justify-center gap-2"
               >
@@ -159,6 +160,21 @@ export function CheckoutWidget({
         <button onClick={reset} className="text-xs text-[var(--color-text-muted)] underline">
           Try again
         </button>
+      )}
+      {confirmOpen && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-xl p-6 space-y-3 max-w-sm w-full">
+            <h3 className="font-semibold">Confirm Payment</h3>
+            <p>Type: Payment</p>
+            <p>Amount: {amount}</p>
+            <p>Recipient: {merchantAddress}</p>
+            <p>Estimated fees: ~2.0 XLM</p>
+            <div className="flex gap-2">
+              <button onClick={() => { setConfirmOpen(false); handlePay(); }} className="flex-1 bg-blue-600 text-white py-2 rounded">Confirm</button>
+              <button onClick={() => setConfirmOpen(false)} className="flex-1 border py-2 rounded">Cancel</button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
